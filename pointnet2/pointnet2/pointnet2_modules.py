@@ -8,8 +8,8 @@ ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(ROOT_DIR) # model
 sys.path.append(os.path.join(ROOT_DIR, '../pointnet2'))
 
-import pointnet2_utils
-import pytorch_utils as pt_utils
+from . import pointnet2_utils
+from . import pytorch_utils as pt_utils
 from typing import List
 
 

@@ -1,0 +1,40 @@
+# Issue #59 native Justin-right HGC adapter.  This does not mutate upstream config.
+data:
+  root: /home/irsl/datasets/dlr/compiled/scdm_justin_right_vgn_train_10000_reconstruction_view_aligned_v3
+  split_seed: 0
+  point_count: 25000
+  centered_grid_edge_m: 0.5
+  positive_match_radius_m: 0.005
+  remaining_visible_negative_fraction: 0.10
+  depth_png_scale_m: 0.001
+hand:
+  name: justin_right_hand_simple
+  dof: 12
+  template_names: [finger2, finger3, finger4]
+  gripper_config: /home/irsl/datasets/dlr/grippers/justin_hand/justin_right_hand_simple.yaml
+pose_bins:
+  # Direct palm-to-approach distance. The official HGC 20cm base is DLR-hand
+  # specific and is not used for Justin.
+  depth_base_cm: 0
+  depth_scope_cm: 28
+  depth_bin_cm: 1
+  azimuth_scope_deg: 360
+  azimuth_bin_deg: 60
+  elevation_scope_deg: 90
+  elevation_bin_deg: 15
+  grasp_angle_scope_deg: 360
+  grasp_angle_bin_deg: 30
+post_processing:
+  top_side_world_up: [0, 0, 1]
+  nms_distance_m: 0.03
+  nms_angle_deg: 30
+training:
+  # Mirrors upstream train.py/base_config.yaml unless a CLI override is recorded.
+  epochs: 80
+  batch_size: 1
+  workers: 1
+  optimizer: Adam
+  learning_rate: 0.0001
+  seed: 0
+  checkpoint_every_epochs: 1
+  validate_every_epochs: 1

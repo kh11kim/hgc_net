@@ -1,0 +1,23 @@
+[project]
+name = "hgc-net-issue59"
+version = "0.0.0"
+description = "Isolated modern CUDA build environment for Issue #59 HGC-Net"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "numpy>=1.26",
+  "ninja>=1.11",
+  "pillow>=10",
+  "pyyaml>=6",
+  "torch==2.9.1",
+]
+
+[tool.uv]
+package = false
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }

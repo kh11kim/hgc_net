@@ -1,0 +1,4 @@
+# HGC-Net-local Issue #59 CUDA environment and extension outputs.
+.venv/
+pointnet2/pointnet2/build/
+pointnet2/pointnet2/pointnet2_cuda*.so

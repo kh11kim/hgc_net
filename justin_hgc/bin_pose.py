@@ -16,9 +16,10 @@ import torch.nn.functional as F
 @dataclass(frozen=True)
 class BinPoseSpec:
     # The upstream angular bins are retained verbatim.  The upstream depth target
-    # was (depth_cm - 20) in [0, 8]; Justin's observed physical depth is 0--26.03
-    # cm on the 100-view contract sample, so use direct centimetres in [0, 28].
-    depth_scope_cm: float = 28.0
+    # was (depth_cm - 20) in [0, 8].  A full 8,995-view train scan found a
+    # maximum Justin target of 28.4019 cm, so use the minimum whole-centimetre
+    # scope that contains every observed train target: [0, 29).
+    depth_scope_cm: float = 29.0
     depth_bin_cm: float = 1.0
     azimuth_scope_deg: float = 360.0
     azimuth_bin_deg: float = 60.0

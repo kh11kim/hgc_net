@@ -119,7 +119,7 @@
       "templates": ["finger2", "finger3", "finger4"],
       "grasp_type_idx_order": "Verified against the Justin KMK grasp_templates insertion order.",
       "joint_targets": "Native 12-DoF q_contact and q_squeeze in canonical physical radians; q_open is static KMK template data, not predicted.",
-      "depth_bin_adapter": "Preserve upstream bin/residual pose representation and angular bins, but replace the DLR-specific depth_cm-20 in [0,8) with direct approach-point-to-palm centimetres in [0,28). The live 100-view stride max was 0.2603 m."
+      "depth_bin_adapter": "Preserve upstream bin/residual pose representation and angular bins, but replace the DLR-specific depth_cm-20 in [0,8) with direct approach-point-to-palm centimetres in [0,29). A full 8,995-view train scan found 1,767,876 visible positives, 100 targets at or above 28 cm, none at or above 29 cm, and a 28.4019 cm maximum."
     },
     "post_processing": {
       "top_side_filter": "Apply the physical meaning of upstream R[:,2,2]>0, not the raw matrix index: keep candidates whose palm lies on the +world-z side of the grasp point (a top-side approach). Canonical reconstruction-grid z is world-up. Implement it as an explicit dot product with world-up after a fixture verifies the approach-axis sign.",

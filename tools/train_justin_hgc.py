@@ -270,6 +270,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--validate-every-epochs", type=int)
     parser.add_argument("--limit-train-batches", type=int, help="smoke-only cap; omit for production")
     parser.add_argument("--limit-val-batches", type=int, help="smoke-only cap; omit for production")
+    parser.add_argument(
+        "--train-sample-id",
+        action="append",
+        help="smoke/regression only: restrict train data to an explicit canonical sample ID (repeatable)",
+    )
     parser.add_argument("--device", default="cuda")
     return parser.parse_args()
 
@@ -299,7 +304,7 @@ def main() -> int:
     if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA was requested but is unavailable")
     seed_everything(int(config["seed"]))
-    train_data = JustinCanonicalDataset(args.root, split="train")
+    train_data = JustinCanonicalDataset(args.root, split="train", sample_ids=args.train_sample_id)
     val_data = JustinCanonicalDataset(args.root, split="val")
     generator = torch.Generator().manual_seed(int(config["seed"]))
     train_loader = DataLoader(

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import numpy as np
 import torch
@@ -48,6 +48,7 @@ class JustinCanonicalDataset(Dataset[dict[str, torch.Tensor]]):
         point_count: int = POINT_COUNT,
         negative_fraction: float = 0.10,
         gripper_config: str | Path = DEFAULT_GRIPPER_CONFIG,
+        sample_ids: Iterable[str] | None = None,
     ) -> None:
         self.root = Path(root)
         self.point_count = int(point_count)
@@ -64,11 +65,19 @@ class JustinCanonicalDataset(Dataset[dict[str, torch.Tensor]]):
             scene_splits = json.load(source)
         if split not in {"train", "val", "test"}:
             raise ValueError(f"split must be train, val, or test; got {split!r}")
-        self.records = [
+        records = [
             record
             for record in _json_lines(self.root / "index" / "samples.jsonl")
             if scene_splits.get(record["scene_id"]) == split
         ]
+        if sample_ids is not None:
+            requested = list(sample_ids)
+            by_id = {record["sample_id"]: record for record in records}
+            missing = [sample_id for sample_id in requested if sample_id not in by_id]
+            if missing:
+                raise ValueError(f"canonical split {split!r} lacks requested sample IDs: {missing}")
+            records = [by_id[sample_id] for sample_id in requested]
+        self.records = records
         self.views = {record["view_id"]: record for record in _json_lines(self.root / "index" / "views.jsonl")}
         if not self.records:
             raise ValueError(f"canonical split {split!r} has no samples")

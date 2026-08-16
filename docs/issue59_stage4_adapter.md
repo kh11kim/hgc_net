@@ -44,9 +44,16 @@ check (42,951 visible positive grasps) found `||palm - approach_point||` in
 metres: p1 `0.0203`, p50 `0.0821`, p99 `0.1566`, max `0.2603`; the offset aligns
 with `-palm local z`.  The adapter therefore retains the exact bin-plus-residual
 representation and all angular bins, but uses direct approach-point-to-palm
-depth in centimetres with range `[0, 28)`.  The loss reports and rejects any
-positive label outside this range before its internal upstream-compatible clamp
-could hide it.
+depth in centimetres.  The initial 100-view estimate selected `[0, 28)`, but a
+full streaming scan of all 8,995 train views (1,767,876 visible positives) found
+100 targets at or above 28 cm and none at or above 29 cm.  Per-template maxima
+were `28.1789`, `28.4019`, and `27.5286` cm for finger2/finger3/finger4, so the
+minimum whole-centimetre scope containing every train target is `[0, 29)`.
+The out-of-range rows came from source grasp indices `147` (finger2) and
+`143`/`144` (finger3); regression samples include `dense_000006_view000` and
+the maximum-depth `dense_000064_view000`.
+The loss reports and rejects any positive label outside this range before its
+internal upstream-compatible clamp could hide it.
 
 ## Runtime filters
 

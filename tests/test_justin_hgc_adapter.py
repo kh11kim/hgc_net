@@ -133,9 +133,9 @@ class HeadAndLossTest(unittest.TestCase):
         self.assertEqual(squeeze.shape, (2, 5, 12, 3))
 
     def test_pose_bin_loss_is_cpu_safe_and_depth_range_is_explicit(self):
-        target = torch.tensor([[27.5, 0.0, 0.0, 0.0]])
+        target = torch.tensor([[28.4019, 0.0, 0.0, 0.0]])
         self.assertEqual(target_range_counts(target)["depth"], 0)
-        self.assertEqual(target_range_counts(torch.tensor([[28.0, 0.0, 0.0, 0.0]]))["depth"], 1)
+        self.assertEqual(target_range_counts(torch.tensor([[29.0, 0.0, 0.0, 0.0]]))["depth"], 1)
         loss_dict, loss = bin_regression_loss(torch.zeros((1, DEFAULT_BIN_SPEC.channels)), target)
         self.assertTrue(torch.isfinite(loss))
         self.assertIn("depth_bin_loss", loss_dict)

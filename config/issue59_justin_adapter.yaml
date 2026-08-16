@@ -29,11 +29,11 @@ post_processing:
   nms_distance_m: 0.03
   nms_angle_deg: 30
 training:
-  # Batch 32 is the Issue #59 production setting; other values mirror upstream
-  # train.py/base_config.yaml unless a CLI override is recorded.
+  # Batch 32 and 12 workers are the Issue #59 production setting. Other
+  # values mirror upstream train.py/base_config.yaml unless overridden.
   epochs: 80
   batch_size: 32
-  workers: 1
+  workers: 12
   optimizer: Adam
   learning_rate: 0.0001
   seed: 0

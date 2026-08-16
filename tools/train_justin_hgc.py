@@ -34,7 +34,7 @@ DEFAULT_RUN_ROOT = REPO_ROOT / "runs" / "issue59"
 UPSTREAM_TRAIN_DEFAULTS = {
     "epochs": 80,
     "batch_size": 32,
-    "workers": 1,
+    "workers": 12,
     "optimizer": "Adam",
     "learning_rate": 1e-4,
     "seed": 0,

@@ -22,6 +22,7 @@ class TrainingContractTest(unittest.TestCase):
         config = train.load_training_config()
         self.assertEqual(config["epochs"], 80)
         self.assertEqual(config["batch_size"], 32)
+        self.assertEqual(config["workers"], 12)
         self.assertEqual(config["optimizer"], "Adam")
         self.assertEqual(config["learning_rate"], 1e-4)
         self.assertEqual(config["seed"], 0)

@@ -102,9 +102,10 @@ Blackwell `sm_120` code.  It does not touch `scdm/.venv`.
 ## Production-training contract
 
 `tools/train_justin_hgc.py` preserves the upstream architecture, optimizer,
-schedule, worker count, and seed: 80 total epochs, Adam with `(0.9, 0.999)`
-betas and `1e-8` epsilon, learning rate `1e-4`, one worker, and seed 0.  The
-upstream function defined a decay helper but never called it, so the Justin arm
+schedule, and seed: 80 total epochs, Adam with `(0.9, 0.999)` betas and
+`1e-8` epsilon, learning rate `1e-4`, and seed 0. The production loader uses
+12 workers to keep the actual 32-scene BatchNorm batch supplied from canonical
+depth data. The upstream function defined a decay helper but never called it, so the Justin arm
 uses a constant learning rate as the actual upstream behavior.
 
 The Issue #59 production batch size is 32, intentionally replacing the

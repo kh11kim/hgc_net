@@ -2,3 +2,4 @@
 .venv/
 pointnet2/pointnet2/build/
 pointnet2/pointnet2/pointnet2_cuda*.so
+runs/

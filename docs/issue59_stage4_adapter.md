@@ -101,12 +101,18 @@ Blackwell `sm_120` code.  It does not touch `scdm/.venv`.
 
 ## Production-training contract
 
-`tools/train_justin_hgc.py` preserves the upstream training policy: 80 total
-epochs, batch size 1, Adam with `(0.9, 0.999)` betas and `1e-8` epsilon, and
-learning rate `1e-4`.  The upstream function defined a decay helper but never
-called it, so the Justin arm uses a constant learning rate as the actual
-upstream behavior.  Worker count is the upstream default of 1 and the fixed
-seed is 0.
+`tools/train_justin_hgc.py` preserves the upstream architecture, optimizer,
+schedule, worker count, and seed: 80 total epochs, Adam with `(0.9, 0.999)`
+betas and `1e-8` epsilon, learning rate `1e-4`, one worker, and seed 0.  The
+upstream function defined a decay helper but never called it, so the Justin arm
+uses a constant learning rate as the actual upstream behavior.
+
+The Issue #59 production batch size is 32, intentionally replacing the
+upstream batch size of 1 so BatchNorm receives a multi-scene batch.  A bounded
+GPU3-1 capacity probe on actual canonical 25,000-point samples passed a full
+forward, loss, backward, and Adam step at batch 32 with 14.52 GiB peak reserved
+memory on a 23.63 GiB MIG slice; batch 40 was a capacity-only ceiling at 18.14
+GiB and is not the production setting.
 
 The canonical index's scene split is used without resampling or leakage:
 8,995 train views, 510 validation views, and 495 test views.  A new run always

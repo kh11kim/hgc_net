@@ -33,7 +33,7 @@ DEFAULT_CONFIG = REPO_ROOT / "config" / "issue59_justin_adapter.yaml"
 DEFAULT_RUN_ROOT = REPO_ROOT / "runs" / "issue59"
 UPSTREAM_TRAIN_DEFAULTS = {
     "epochs": 80,
-    "batch_size": 1,
+    "batch_size": 32,
     "workers": 1,
     "optimizer": "Adam",
     "learning_rate": 1e-4,

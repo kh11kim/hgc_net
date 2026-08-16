@@ -20,11 +20,15 @@ import torch
 import yaml
 from torch.utils.data import DataLoader
 
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 from justin_hgc.data import DEFAULT_ROOT, JustinCanonicalDataset
 from justin_hgc.model import JustinPointNet2
 
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = REPO_ROOT / "config" / "issue59_justin_adapter.yaml"
 DEFAULT_RUN_ROOT = REPO_ROOT / "runs" / "issue59"
 UPSTREAM_TRAIN_DEFAULTS = {

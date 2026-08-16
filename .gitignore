@@ -1,5 +1,6 @@
 # HGC-Net-local Issue #59 CUDA environment and extension outputs.
 .venv/
+__pycache__/
 pointnet2/pointnet2/build/
 pointnet2/pointnet2/pointnet2_cuda*.so
 runs/

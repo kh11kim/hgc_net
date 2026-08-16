@@ -40,6 +40,7 @@ UPSTREAM_TRAIN_DEFAULTS = {
     "seed": 0,
     "checkpoint_every_epochs": 1,
     "validate_every_epochs": 1,
+    "progress_every_batches": 100,
 }
 
 
@@ -171,11 +172,14 @@ def run_epoch(
     optimizer: torch.optim.Optimizer | None,
     device: torch.device,
     limit_batches: int | None,
+    progress_label: str,
+    progress_every_batches: int,
 ) -> tuple[dict[str, float], int]:
     training = optimizer is not None
     model.train(training)
     rows: list[dict[str, float]] = []
     steps = 0
+    started = time.monotonic()
     context = torch.enable_grad() if training else torch.no_grad()
     with context:
         for batch_index, batch in enumerate(loader):
@@ -194,6 +198,23 @@ def run_epoch(
                 optimizer.step()
             rows.append(_finite_metrics(losses))
             steps += 1
+            if steps % progress_every_batches == 0 or (
+                limit_batches is not None and steps == limit_batches
+            ):
+                elapsed = time.monotonic() - started
+                print(
+                    json.dumps(
+                        {
+                            "progress": progress_label,
+                            "batch": steps,
+                            "available_batches": len(loader),
+                            "elapsed_seconds": elapsed,
+                            "seconds_per_batch": elapsed / steps,
+                        },
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
     return _mean_metrics(rows), steps
 
 
@@ -323,13 +344,25 @@ def main() -> int:
     for epoch in range(start_epoch, int(config["epochs"])):
         started = time.monotonic()
         train_metrics, train_steps = run_epoch(
-            model=model, loader=train_loader, optimizer=optimizer, device=device, limit_batches=args.limit_train_batches
+            model=model,
+            loader=train_loader,
+            optimizer=optimizer,
+            device=device,
+            limit_batches=args.limit_train_batches,
+            progress_label=f"train/epoch-{epoch}",
+            progress_every_batches=int(config["progress_every_batches"]),
         )
         global_step += train_steps
         metrics = {f"train/{key}": value for key, value in train_metrics.items()}
         if epoch % int(config["validate_every_epochs"]) == 0:
             val_metrics, _ = run_epoch(
-                model=model, loader=val_loader, optimizer=None, device=device, limit_batches=args.limit_val_batches
+                model=model,
+                loader=val_loader,
+                optimizer=None,
+                device=device,
+                limit_batches=args.limit_val_batches,
+                progress_label=f"val/epoch-{epoch}",
+                progress_every_batches=int(config["progress_every_batches"]),
             )
             metrics.update({f"val/{key}": value for key, value in val_metrics.items()})
         metrics.update({"epoch": epoch, "global_step": global_step, "epoch_seconds": time.monotonic() - started})

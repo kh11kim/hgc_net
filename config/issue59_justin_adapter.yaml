@@ -38,3 +38,4 @@ training:
   seed: 0
   checkpoint_every_epochs: 1
   validate_every_epochs: 1
+  progress_every_batches: 100

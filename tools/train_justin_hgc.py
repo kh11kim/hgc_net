@@ -128,9 +128,9 @@ def load_checkpoint(
     if rng:
         random.setstate(rng["python"])
         np.random.set_state(rng["numpy"])
-        torch.set_rng_state(rng["torch"])
+        torch.set_rng_state(rng["torch"].cpu())
         if device.type == "cuda" and rng.get("cuda") is not None:
-            torch.cuda.set_rng_state_all(rng["cuda"])
+            torch.cuda.set_rng_state_all([state.cpu() for state in rng["cuda"]])
     return payload
 
 

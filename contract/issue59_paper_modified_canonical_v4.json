@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "purpose": "Issue #59 paper-modified Justin-right HGC arm contract",
+  "arm": "paper_modified",
+  "source_contract": "issue59_upstream_canonical_v4.json",
+  "canonical_unified_v4": {
+    "default_root": "/home/irsl/datasets/dlr/compiled/scdm_justin_right_vgn_train_10000_reconstruction_view_aligned_v4",
+    "split_counts": {"train": 8995, "val": 510, "test": 495},
+    "grid": {
+      "shape": [64, 64, 64],
+      "axis_order": ["z", "y", "x"],
+      "tensor_order": "DHW=ZYX",
+      "edge_length_m": 0.5
+    },
+    "input": {
+      "channels": ["object_full_occupancy", "ground"],
+      "source_path_field": "reconstruction_full_seg_grid_path",
+      "source_array_key": "full_seg_grid",
+      "object_rule": "label >= 2",
+      "ground_rule": "label == 1",
+      "dtype": "float32"
+    },
+    "targets": {
+      "grasp_point": "canonical approach_point in view-aligned grid frame",
+      "feature_index": "rounded align_corners=true DHW/ZYX index",
+      "templates": ["finger2", "finger3", "finger4"],
+      "dof": 12,
+      "q_open": "fixed KMK template value; not predicted",
+      "positive_filter": "all approach points inside the centered 0.5m grid",
+      "thumb_visible_mask": "not used",
+      "negative_supervision": {
+        "source": "GT full object occupancy voxels",
+        "selection": "deterministic sample_id+seed without positive approach-index overlap",
+        "default_count": 100,
+        "config_key": "data.negative_voxel_count",
+        "labels": "template_graspable=0 for all three templates"
+      }
+    }
+  },
+  "model": {
+    "encoder": "independent 3D-FPN",
+    "reference_only": "scdm_final@a344dcf076bc0f080b96d3909676cf734d4fac32",
+    "local_feature_channels": 128,
+    "head": "justin_hgc.JustinHGCOutputHead",
+    "loss": "justin_hgc.JustinHGCOutputHead.loss"
+  },
+  "training": {
+    "epochs": 80,
+    "batch_size": 1,
+    "optimizer": "AdamW",
+    "learning_rate": 0.0001,
+    "weight_decay": 0.000001,
+    "seed": 0,
+    "best_checkpoint": "minimum validation total_loss"
+  }
+}

@@ -28,6 +28,8 @@ if str(REPO_ROOT) not in sys.path:
 
 from justin_hgc.data import DEFAULT_DERIVED_ROOT, DEFAULT_ROOT, JustinCanonicalDataset
 from justin_hgc.model import JustinPointNet2
+from paper_modified_hgc.data import PaperModifiedCanonicalDataset
+from paper_modified_hgc.model import PaperModifiedHGC
 
 
 DEFAULT_CONFIG = REPO_ROOT / "config" / "issue59_justin_adapter.yaml"
@@ -43,19 +45,72 @@ UPSTREAM_TRAIN_DEFAULTS = {
     "validate_every_epochs": 1,
     "progress_every_batches": 100,
 }
+PAPER_MODIFIED_TRAIN_DEFAULTS = {
+    "epochs": 80,
+    "batch_size": 1,
+    "workers": 1,
+    "optimizer": "AdamW",
+    "learning_rate": 1e-4,
+    "weight_decay": 1e-6,
+    "seed": 0,
+    "checkpoint_every_epochs": 1,
+    "validate_every_epochs": 1,
+    "progress_every_batches": 100,
+}
+
+
+def _validate_paper_config(config: dict[str, Any]) -> None:
+    """Validate declared paper-arm representation, encoder, and split seed."""
+
+    if config.get("arm") != "paper_modified":
+        return
+    data_config = dict(config.get("data", {}))
+    model_config = dict(config.get("model", {}))
+    representation = data_config.get("representation", "gt_full_occupancy_ground")
+    if representation != "gt_full_occupancy_ground":
+        raise ValueError(
+            "paper_modified data.representation must be 'gt_full_occupancy_ground', "
+            f"got {representation!r}"
+        )
+    encoder = model_config.get("encoder", "3d_fpn")
+    if encoder != "3d_fpn":
+        raise ValueError(
+            "paper_modified model.encoder must be '3d_fpn', "
+            f"got {encoder!r}"
+        )
+    split_seed = data_config.get("split_seed")
+    if split_seed is not None and int(split_seed) != int(config["seed"]):
+        raise ValueError(
+            "paper_modified data.split_seed must equal training seed "
+            f"({config['seed']}), got {split_seed}"
+        )
 
 
 def load_training_config(path: Path = DEFAULT_CONFIG) -> dict[str, Any]:
-    """Read the Justin config and validate the upstream-derived train defaults."""
+    """Read either arm's config while preserving upstream defaults."""
     with path.open(encoding="utf-8") as source:
-        payload = yaml.safe_load(source)
-    training = dict(UPSTREAM_TRAIN_DEFAULTS)
+        payload = yaml.safe_load(source) or {}
+    arm = str(payload.get("arm", "upstream_faithful"))
+    arm = {
+        "upstream": "upstream_faithful",
+        "paper_modified_hgc": "paper_modified",
+    }.get(arm, arm)
+    if arm not in {"upstream_faithful", "paper_modified"}:
+        raise ValueError(f"{path}: unsupported HGC arm {arm!r}")
+    defaults = PAPER_MODIFIED_TRAIN_DEFAULTS if arm == "paper_modified" else UPSTREAM_TRAIN_DEFAULTS
+    training = dict(defaults)
     training.update(payload.get("training", {}))
-    missing = set(UPSTREAM_TRAIN_DEFAULTS) - set(training)
+    missing = set(defaults) - set(training)
     if missing:
         raise ValueError(f"{path}: missing training settings {sorted(missing)}")
-    if training["optimizer"] != "Adam":
-        raise ValueError("Issue #59 preserves upstream Adam optimizer")
+    if training["optimizer"] not in {"Adam", "AdamW"}:
+        raise ValueError(f"{path}: optimizer must be Adam or AdamW")
+    if arm == "upstream_faithful" and training["optimizer"] != "Adam":
+        raise ValueError("upstream_faithful preserves upstream Adam optimizer")
+    training["arm"] = arm
+    training["data"] = dict(payload.get("data", {}))
+    training["model"] = dict(payload.get("model", {}))
+    _validate_paper_config(training)
     return training
 
 
@@ -186,7 +241,7 @@ def _f1(true_positive: int, false_positive: int, false_negative: int) -> float:
 
 def run_epoch(
     *,
-    model: JustinPointNet2,
+    model: torch.nn.Module,
     loader: DataLoader[dict[str, torch.Tensor]],
     optimizer: torch.optim.Optimizer | None,
     device: torch.device,
@@ -208,7 +263,12 @@ def run_epoch(
             if limit_batches is not None and batch_index >= limit_batches:
                 break
             batch = _to_device(batch, device)
-            prediction = model(batch["point"], batch["norm_point"].transpose(1, 2).contiguous())
+            if hasattr(model, "forward_batch"):
+                prediction = model.forward_batch(batch)  # type: ignore[attr-defined]
+            else:
+                prediction = model(
+                    batch["point"], batch["norm_point"].transpose(1, 2).contiguous()
+                )
             counts = _graspability_counts(prediction[0], batch["template_graspable"])
             true_positive += counts[0]
             false_positive += counts[1]
@@ -256,7 +316,7 @@ def write_provenance(
     config_path: Path,
     config: dict[str, Any],
     dataset_root: Path,
-    derived_root: Path,
+    derived_root: Path | None,
     device: torch.device,
     command: list[str],
     train_count: int,
@@ -275,7 +335,7 @@ def write_provenance(
         "device": str(device),
         "cuda_device_name": torch.cuda.get_device_name(device) if device.type == "cuda" else None,
         "dataset_root": str(dataset_root),
-        "derived_root": str(derived_root),
+        "derived_root": str(derived_root) if derived_root is not None else None,
         "train_views": train_count,
         "val_views": val_count,
         "training_config": config,
@@ -287,8 +347,11 @@ def write_provenance(
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
-    parser.add_argument("--root", type=Path, default=DEFAULT_ROOT)
-    parser.add_argument("--derived-root", type=Path, default=DEFAULT_DERIVED_ROOT)
+    # None means "use the selected arm's config".  For the default upstream
+    # config this resolves to the historical DEFAULT_ROOT/DEFAULT_DERIVED_ROOT
+    # values, preserving the existing CLI behavior.
+    parser.add_argument("--root", type=Path)
+    parser.add_argument("--derived-root", type=Path)
     parser.add_argument("--run-root", type=Path, default=DEFAULT_RUN_ROOT)
     parser.add_argument("--run-name", default="justin_hgc")
     parser.add_argument("--resume", type=Path, help="path to an existing last.pt checkpoint")
@@ -312,6 +375,80 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def build_datasets(
+    config: dict[str, Any],
+    *,
+    root: Path,
+    derived_root: Path | None,
+    train_sample_ids: Iterable[str] | None = None,
+) -> tuple[torch.utils.data.Dataset, torch.utils.data.Dataset]:
+    """Construct both splits for the selected arm behind one trainer seam."""
+
+    arm = config["arm"]
+    data_config = dict(config.get("data", {}))
+    if arm == "paper_modified":
+        _validate_paper_config(config)
+        kwargs = {
+            "num_grasps": int(data_config.get("num_grasps", 100)),
+            "grid_size": int(data_config.get("grid_size", 64)),
+            "grid_edge_m": float(data_config.get("grid_edge_m", 0.5)),
+            "seed": int(config["seed"]),
+            "gripper_config": data_config.get("gripper_config"),
+        }
+        if data_config.get("negative_voxel_fraction") is not None:
+            kwargs["negative_voxel_count"] = None
+            kwargs["negative_voxel_fraction"] = float(data_config["negative_voxel_fraction"])
+        else:
+            kwargs["negative_voxel_count"] = int(data_config.get("negative_voxel_count", 100))
+        if kwargs["gripper_config"] is None:
+            kwargs.pop("gripper_config")
+        train_data = PaperModifiedCanonicalDataset(
+            root, split="train", sample_ids=train_sample_ids, **kwargs
+        )
+        val_data = PaperModifiedCanonicalDataset(root, split="val", **kwargs)
+        return train_data, val_data
+    train_data = JustinCanonicalDataset(
+        root,
+        derived_root=derived_root,
+        split="train",
+        point_count=int(data_config.get("point_count", 25_000)),
+        sample_ids=train_sample_ids,
+    )
+    val_data = JustinCanonicalDataset(
+        root,
+        derived_root=derived_root,
+        split="val",
+        point_count=int(data_config.get("point_count", 25_000)),
+    )
+    return train_data, val_data
+
+
+def build_model(config: dict[str, Any]) -> torch.nn.Module:
+    """Instantiate the encoder selected by config; the head remains shared."""
+
+    if config["arm"] == "paper_modified":
+        _validate_paper_config(config)
+        model_config = dict(config.get("model", {}))
+        return PaperModifiedHGC(
+            in_channels=int(model_config.get("in_channels", 2)),
+            encoder_channels=tuple(model_config.get("channels", (32, 64, 128, 256))),
+            encoder_scales=tuple(model_config.get("scales", (2, 2, 2, 4))),
+            encoder_out_channels=int(model_config.get("out_channels", 128)),
+            align_corners=bool(model_config.get("align_corners", True)),
+        )
+    return JustinPointNet2()
+
+
+def build_optimizer(model: torch.nn.Module, config: dict[str, Any]) -> torch.optim.Optimizer:
+    """Build the arm-specific optimizer without changing upstream Adam."""
+
+    kwargs = {"lr": float(config["learning_rate"]), "betas": (0.9, 0.999), "eps": 1e-8}
+    if config["optimizer"] == "AdamW":
+        kwargs["weight_decay"] = float(config.get("weight_decay", 1e-6))
+        return torch.optim.AdamW(model.parameters(), **kwargs)
+    return torch.optim.Adam(model.parameters(), **kwargs)
+
+
 def main() -> int:
     args = _parse_args()
     config = load_training_config(args.config)
@@ -326,8 +463,23 @@ def main() -> int:
     }.items():
         if value is not None:
             config[key] = value
+    _validate_paper_config(config)
     if config["epochs"] <= 0 or config["batch_size"] <= 0 or config["workers"] < 0:
         raise ValueError("epochs and batch size must be positive; workers must be non-negative")
+    data_config = dict(config.get("data", {}))
+    dataset_root = Path(
+        args.root
+        or data_config.get(
+            "root",
+            DEFAULT_ROOT,
+        )
+    )
+    if args.derived_root is not None:
+        derived_root = args.derived_root
+    elif config["arm"] == "paper_modified":
+        derived_root = None
+    else:
+        derived_root = Path(data_config.get("derived_root", DEFAULT_DERIVED_ROOT))
     if args.resume is not None:
         run_dir = args.resume.resolve().parent
         prepare_run_dir(run_dir, resume=True)
@@ -337,10 +489,12 @@ def main() -> int:
     if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA was requested but is unavailable")
     seed_everything(int(config["seed"]))
-    train_data = JustinCanonicalDataset(
-        args.root, derived_root=args.derived_root, split="train", sample_ids=args.train_sample_id
+    train_data, val_data = build_datasets(
+        config,
+        root=dataset_root,
+        derived_root=derived_root,
+        train_sample_ids=args.train_sample_id,
     )
-    val_data = JustinCanonicalDataset(args.root, derived_root=args.derived_root, split="val")
     generator = torch.Generator().manual_seed(int(config["seed"]))
     train_loader = DataLoader(
         train_data,
@@ -359,8 +513,8 @@ def main() -> int:
         pin_memory=device.type == "cuda",
         worker_init_fn=_worker_init,
     )
-    model = JustinPointNet2().to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=float(config["learning_rate"]), betas=(0.9, 0.999), eps=1e-8)
+    model = build_model(config).to(device)
+    optimizer = build_optimizer(model, config)
     start_epoch = 0
     global_step = 0
     best_val = float("inf")
@@ -369,8 +523,8 @@ def main() -> int:
             run_dir,
             config_path=args.config,
             config=config,
-            dataset_root=args.root,
-            derived_root=args.derived_root,
+            dataset_root=dataset_root,
+            derived_root=derived_root,
             device=device,
             command=sys.argv,
             train_count=len(train_data),
@@ -390,8 +544,8 @@ def main() -> int:
         mode=args.wandb_mode,
         config={
             **config,
-            "dataset_root": str(args.root),
-            "derived_root": str(args.derived_root),
+            "dataset_root": str(dataset_root),
+            "derived_root": str(derived_root) if derived_root is not None else None,
             "git_commit": _git_text("rev-parse", "HEAD"),
         },
     )

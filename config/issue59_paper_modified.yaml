@@ -1,0 +1,32 @@
+# Issue #59 paper-modified Justin-right HGC arm.
+# The shared trainer selects only the data representation and encoder from arm.
+arm: paper_modified
+data:
+  root: /home/irsl/datasets/dlr/compiled/scdm_justin_right_vgn_train_10000_reconstruction_view_aligned_v4
+  grid_size: 64
+  grid_edge_m: 0.5
+  num_grasps: 100
+  # GT object voxels sampled outside all positive approach anchors provide
+  # class-0 supervision to the shared Justin graspability head.
+  negative_voxel_count: 100
+  split_seed: 0
+  gripper_config: /home/irsl/datasets/dlr/grippers/justin_hand/justin_right_hand_simple.yaml
+  representation: gt_full_occupancy_ground
+model:
+  encoder: 3d_fpn
+  in_channels: 2
+  channels: [32, 64, 128, 256]
+  scales: [2, 2, 2, 4]
+  out_channels: 128
+  align_corners: true
+training:
+  epochs: 80
+  batch_size: 1
+  workers: 1
+  optimizer: AdamW
+  learning_rate: 0.0001
+  weight_decay: 0.000001
+  seed: 0
+  checkpoint_every_epochs: 1
+  validate_every_epochs: 1
+  progress_every_batches: 100

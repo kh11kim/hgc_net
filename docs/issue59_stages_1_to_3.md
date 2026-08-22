@@ -55,6 +55,12 @@ and HGC configs/checkpoint references. It is a 3D-FPN, voxel-grid implementation
 not the official PointNet++ baseline, so it is evidence for historical provenance
 only. Stages 1–3 neither copy from nor alter it.
 
+This paragraph records the historical scope of stages 1–3.  The current decision
+is to use that implementation as a source reference and create a new, independent
+paper-modified 3D-FPN arm inside this HGC-Net repository.  See
+[hgcnet_model_and_data.md](hgcnet_model_and_data.md) for the current status and
+implementation plan.
+
 ## Stage 4 planning record — superseded by the implemented adapter
 
 The current implementation, validation commands, and documented behavioral deltas

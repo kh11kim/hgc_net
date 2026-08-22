@@ -152,3 +152,9 @@ class JustinPointNet2(nn.Module):
 
     def forward(self, xyz: torch.Tensor, normalized_points: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         return self.head(self.encode(xyz, normalized_points))
+
+    def forward_batch(self, batch: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Shared trainer seam for the point and voxel HGC arms."""
+        if "point" not in batch or "norm_point" not in batch:
+            raise KeyError("upstream-faithful batch must contain point and norm_point")
+        return self(batch["point"], batch["norm_point"].transpose(1, 2).contiguous())

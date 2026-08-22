@@ -17,6 +17,7 @@ from typing import Any, Iterable
 
 import numpy as np
 import torch
+import wandb
 import yaml
 from torch.utils.data import DataLoader
 
@@ -165,6 +166,24 @@ def _to_device(batch: dict[str, torch.Tensor], device: torch.device) -> dict[str
     return {key: value.to(device, non_blocking=True) for key, value in batch.items()}
 
 
+def _graspability_counts(
+    graspable_logits: torch.Tensor, labels: torch.Tensor
+) -> tuple[int, int, int]:
+    prediction = torch.argmax(graspable_logits, dim=2)
+    supervised = labels >= 0
+    positive = labels == 1
+    predicted_positive = prediction == 1
+    true_positive = int((supervised & positive & predicted_positive).sum().item())
+    false_positive = int((supervised & ~positive & predicted_positive).sum().item())
+    false_negative = int((supervised & positive & ~predicted_positive).sum().item())
+    return true_positive, false_positive, false_negative
+
+
+def _f1(true_positive: int, false_positive: int, false_negative: int) -> float:
+    denominator = 2 * true_positive + false_positive + false_negative
+    return 0.0 if denominator == 0 else 2.0 * true_positive / denominator
+
+
 def run_epoch(
     *,
     model: JustinPointNet2,
@@ -178,6 +197,9 @@ def run_epoch(
     training = optimizer is not None
     model.train(training)
     rows: list[dict[str, float]] = []
+    true_positive = 0
+    false_positive = 0
+    false_negative = 0
     steps = 0
     started = time.monotonic()
     context = torch.enable_grad() if training else torch.no_grad()
@@ -187,6 +209,10 @@ def run_epoch(
                 break
             batch = _to_device(batch, device)
             prediction = model(batch["point"], batch["norm_point"].transpose(1, 2).contiguous())
+            counts = _graspability_counts(prediction[0], batch["template_graspable"])
+            true_positive += counts[0]
+            false_positive += counts[1]
+            false_negative += counts[2]
             losses = model.head.loss(prediction, batch)
             loss = losses["total_loss"]
             if not torch.isfinite(loss):
@@ -215,7 +241,9 @@ def run_epoch(
                     ),
                     flush=True,
                 )
-    return _mean_metrics(rows), steps
+    metrics = _mean_metrics(rows)
+    metrics["graspability_f1"] = _f1(true_positive, false_positive, false_negative)
+    return metrics, steps
 
 
 def _git_text(*args: str) -> str:
@@ -279,6 +307,8 @@ def _parse_args() -> argparse.Namespace:
         help="smoke/regression only: restrict train data to an explicit canonical sample ID (repeatable)",
     )
     parser.add_argument("--device", default="cuda")
+    parser.add_argument("--wandb-project", default="hgc-net-issue59")
+    parser.add_argument("--wandb-mode", choices=("online", "offline", "disabled"), default="online")
     return parser.parse_args()
 
 
@@ -352,6 +382,19 @@ def main() -> int:
         global_step = int(state["global_step"])
         best_val = float(state.get("metrics", {}).get("val/total_loss", best_val))
     metrics_path = run_dir / "metrics.jsonl"
+    wandb_run = wandb.init(
+        project=args.wandb_project,
+        name=run_dir.name,
+        id=run_dir.name,
+        resume="allow",
+        mode=args.wandb_mode,
+        config={
+            **config,
+            "dataset_root": str(args.root),
+            "derived_root": str(args.derived_root),
+            "git_commit": _git_text("rev-parse", "HEAD"),
+        },
+    )
     for epoch in range(start_epoch, int(config["epochs"])):
         started = time.monotonic()
         train_metrics, train_steps = run_epoch(
@@ -377,6 +420,14 @@ def main() -> int:
             )
             metrics.update({f"val/{key}": value for key, value in val_metrics.items()})
         metrics.update({"epoch": epoch, "global_step": global_step, "epoch_seconds": time.monotonic() - started})
+        wandb_metrics = {
+            "train/total_loss": metrics["train/total_loss"],
+            "learning_rate": optimizer.param_groups[0]["lr"],
+        }
+        for key in ("val/total_loss", "val/graspability_f1"):
+            if key in metrics:
+                wandb_metrics[key] = metrics[key]
+        wandb_run.log(wandb_metrics, step=epoch)
         with metrics_path.open("a", encoding="utf-8") as output:
             output.write(json.dumps(metrics, sort_keys=True) + "\n")
         print(json.dumps(metrics, sort_keys=True), flush=True)
@@ -388,6 +439,9 @@ def main() -> int:
         if val_loss is not None and float(val_loss) < best_val:
             best_val = float(val_loss)
             save_checkpoint(run_dir / "best.pt", model=model, optimizer=optimizer, epoch=epoch, global_step=global_step, config=config, metrics=checkpoint_metrics)
+            wandb_run.summary["best/val_total_loss"] = best_val
+            wandb_run.summary["best/epoch"] = epoch
+    wandb_run.finish()
     return 0
 
 

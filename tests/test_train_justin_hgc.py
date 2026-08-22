@@ -18,6 +18,15 @@ SPEC.loader.exec_module(train)
 
 
 class TrainingContractTest(unittest.TestCase):
+    def test_graspability_f1_ignores_unsupervised_rows(self) -> None:
+        logits = torch.tensor(
+            [[[[0.0], [1.0]], [[0.0], [1.0]], [[1.0], [0.0]], [[0.0], [1.0]]]]
+        )
+        labels = torch.tensor([[[1], [0], [1], [-1]]])
+        counts = train._graspability_counts(logits, labels)
+        self.assertEqual(counts, (1, 1, 1))
+        self.assertAlmostEqual(train._f1(*counts), 0.5)
+
     def test_default_contract_matches_upstream_training_policy(self) -> None:
         config = train.load_training_config()
         self.assertEqual(config["epochs"], 80)

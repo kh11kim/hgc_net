@@ -15,14 +15,15 @@ layer sizes are copied from official HGC-Net with normalized points enabled.
 
 ## Labels
 
-- A canonical positive is eligible only when its `thumb_visible_mask` is true for
-  this view.
-- Its canonical `approach_point` labels every sampled visible point within 5 mm.
+- Every canonical positive is considered; `thumb_visible_mask` is not used as a
+  supervision filter. Geometric matching alone determines whether its surface
+  anchor is represented in the current depth view.
+- Its canonical `approach_point` labels every sampled point within 5 mm.
   Overlaps are resolved by nearest approach point, then source-grasp index.
 - Ten percent of all remaining visible points are deterministic negatives for all
   three templates.  Everything else is ignored, preserving the official sparse
   `{-1, 0, 1}` point-supervision style.
-- The unified-v3 payload has `negative_palm_pose9d` and `negative_q_contact`, but
+- The unified-v4 payload has `negative_palm_pose9d` and `negative_q_contact`, but
   **no negative approach point**.  We therefore do not invent a surface anchor
   for those rows or silently turn them into point labels.
 
@@ -39,19 +40,11 @@ is read from the static KMK `grasp_templates.<name>.q_open` row during runtime
 decode; it is not a model output.
 
 The official HGC depth target is DLR-specific: `(depth_cm - 20)` in an 8 cm
-range.  It cannot represent canonical Justin palms.  A live 100-view stride
-check (42,951 visible positive grasps) found `||palm - approach_point||` in
-metres: p1 `0.0203`, p50 `0.0821`, p99 `0.1566`, max `0.2603`; the offset aligns
-with `-palm local z`.  The adapter therefore retains the exact bin-plus-residual
-representation and all angular bins, but uses direct approach-point-to-palm
-depth in centimetres.  The initial 100-view estimate selected `[0, 28)`, but a
-full streaming scan of all 8,995 train views (1,767,876 visible positives) found
-100 targets at or above 28 cm and none at or above 29 cm.  Per-template maxima
-were `28.1789`, `28.4019`, and `27.5286` cm for finger2/finger3/finger4, so the
-minimum whole-centimetre scope containing every train target is `[0, 29)`.
-The out-of-range rows came from source grasp indices `147` (finger2) and
-`143`/`144` (finger3); regression samples include `dense_000006_view000` and
-the maximum-depth `dense_000064_view000`.
+range. It cannot represent canonical Justin palms. The adapter therefore
+retains the exact bin-plus-residual representation and all angular bins, but
+uses direct approach-point-to-palm depth in centimetres. A whole unified-v4
+audit over all canonical positives found a maximum distance of `0.2861356 m`
+and no target at or above 29 cm, so `[0, 29)` contains the v4 targets.
 The loss reports and rejects any positive label outside this range before its
 internal upstream-compatible clamp could hide it.
 
@@ -84,7 +77,8 @@ uv run python -m unittest tests/test_justin_hgc_adapter.py -v
 uv run python tools/validate_issue59_contract.py
 ```
 
-Before a GPU smoke, first inspect `/home/irsl/ws/dlr/GPU.md`.  Build the local
+Before a GPU smoke, first inspect `/home/irsl/ws/dlr/GPU_new.md` and verify the
+live device state. Build the local
 extension for the installed CUDA toolkit and then use the allocated device:
 
 ```bash
@@ -123,7 +117,7 @@ selects `best.pt`, and each checkpoint includes model, Adam state, counters,
 metrics, and RNG states.  `provenance.json` pins command, commit, worktree
 status, dataset root/counts, Torch/CUDA/device details, and the copied config.
 
-After allocating a GPU explicitly recorded in `GPU.md`, the smoke and resume
+After allocating a GPU explicitly recorded in `GPU_new.md`, the smoke and resume
 commands are:
 
 ```bash

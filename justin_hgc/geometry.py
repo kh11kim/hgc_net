@@ -1,4 +1,4 @@
-"""Frame-explicit geometry for canonical unified-v3 views."""
+"""Frame-explicit geometry for canonical unified-v4 views."""
 
 from __future__ import annotations
 

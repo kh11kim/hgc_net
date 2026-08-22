@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CPU smoke for one canonical-v3 view; no PointNet++ CUDA code is loaded."""
+"""CPU smoke for one canonical-v4 view and its negative sidecar."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import json
 
 import numpy as np
 
-from justin_hgc.data import DEFAULT_ROOT, JustinCanonicalDataset
+from justin_hgc.data import DEFAULT_DERIVED_ROOT, DEFAULT_ROOT, JustinCanonicalDataset
 from justin_hgc.bin_pose import target_range_counts
 from justin_hgc.geometry import POINT_COUNT
 
@@ -16,10 +16,13 @@ from justin_hgc.geometry import POINT_COUNT
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", default=str(DEFAULT_ROOT))
+    parser.add_argument("--derived-root", default=str(DEFAULT_DERIVED_ROOT))
     parser.add_argument("--split", choices=("train", "val", "test"), default="train")
     parser.add_argument("--index", type=int, default=0)
     args = parser.parse_args()
-    dataset = JustinCanonicalDataset(args.root, split=args.split, point_count=POINT_COUNT)
+    dataset = JustinCanonicalDataset(
+        args.root, derived_root=args.derived_root, split=args.split, point_count=POINT_COUNT
+    )
     item = dataset.load_numpy(args.index)
     if not np.isfinite(item["point"]).all():
         raise RuntimeError("adapter produced non-finite point coordinates")
@@ -36,7 +39,7 @@ def main() -> int:
         "sample_id": item["sample_id"],
         "point_shape": list(item["point"].shape),
         "visible_crop_count": int(item["visible_crop_count"]),
-        "visible_positive_count": int(item["visible_positive_count"]),
+        "canonical_positive_count": int(item["canonical_positive_count"]),
         "matched_positive_count": int(item["matched_positive_count"]),
         "positive_point_labels": int((labels == 1).sum()),
         "negative_point_labels": int((labels == 0).sum()),

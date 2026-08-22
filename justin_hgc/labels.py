@@ -1,4 +1,4 @@
-"""Sparse point supervision for canonical unified-v3 visible views."""
+"""Sparse point supervision for canonical unified-v4 views."""
 
 from __future__ import annotations
 
@@ -17,8 +17,8 @@ class SparseTemplateLabels:
     pose: np.ndarray  # (N, templates, 4), float32
     q_contact: np.ndarray  # (N, templates, 12), float32
     q_squeeze: np.ndarray  # (N, templates, 12), float32
-    visible_positive_count: int
-    matched_positive_count: int  # number of visible positive approach anchors with a 5 mm surface match
+    canonical_positive_count: int
+    matched_positive_count: int  # canonical approach anchors with a 5 mm surface match
 
 
 def make_sparse_template_labels(
@@ -34,10 +34,11 @@ def make_sparse_template_labels(
     negative_fraction: float,
     key: str,
     radius_m: float = 0.005,
+    negative_point_indices: np.ndarray | None = None,
 ) -> SparseTemplateLabels:
-    """Attach visible positives and a deterministic 10% background subset.
+    """Attach geometric positives and either cached or generated negatives.
 
-    Unified-v3 stores ``negative_palm_pose9d`` and ``negative_q_contact`` but no
+    Unified-v4 stores ``negative_palm_pose9d`` and ``negative_q_contact`` but no
     negative approach point.  They cannot truthfully be attached to a visible
     surface point, so they are intentionally *not* converted into point labels.
     The remaining visible points receive the upstream-style sparse 10% negatives.
@@ -93,10 +94,24 @@ def make_sparse_template_labels(
 
     positive_rows = np.any(labels == 1, axis=1)
     remaining = np.flatnonzero(~positive_rows)
-    negative_count = int(np.floor(negative_fraction * len(remaining)))
-    if negative_count:
-        rng = np.random.default_rng(stable_seed(key, salt="issue59-negatives"))
-        negative_rows = rng.choice(remaining, size=negative_count, replace=False)
+    if negative_point_indices is not None:
+        negative_rows = np.asarray(negative_point_indices, dtype=np.int64)
+        if negative_rows.ndim != 1:
+            raise ValueError("negative_point_indices must be one-dimensional")
+        if np.any((negative_rows < 0) | (negative_rows >= n)):
+            raise ValueError("negative_point_indices contains an out-of-range row")
+        if len(np.unique(negative_rows)) != len(negative_rows):
+            raise ValueError("negative_point_indices contains duplicates")
+        if np.any(positive_rows[negative_rows]):
+            raise ValueError("cached negative point overlaps a geometric positive")
+        labels[negative_rows, :] = 0
+    else:
+        negative_count = int(np.floor(negative_fraction * len(remaining)))
+        if not negative_count:
+            negative_rows = np.empty(0, dtype=np.int64)
+        else:
+            rng = np.random.default_rng(stable_seed(key, salt="issue59-negatives"))
+            negative_rows = rng.choice(remaining, size=negative_count, replace=False)
         labels[negative_rows, :] = 0
     matched_positive_count = int(np.count_nonzero(matched_grasps))
     return SparseTemplateLabels(
@@ -104,6 +119,6 @@ def make_sparse_template_labels(
         pose=pose,
         q_contact=contact,
         q_squeeze=squeeze,
-        visible_positive_count=len(approach_point),
+        canonical_positive_count=len(approach_point),
         matched_positive_count=matched_positive_count,
     )

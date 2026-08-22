@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate Issue #59's immutable upstream and canonical unified-v3 contract.
+"""Validate Issue #59's immutable upstream and current canonical data contract.
 
 This uses only the standard library and reads dataset metadata only: dataset.yaml
 and index/splits.json.  It deliberately does not open NPZ/HDF5 arrays or perform
@@ -19,7 +19,7 @@ from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_MANIFEST = REPO_ROOT / "contract" / "issue59_upstream_canonical_v3.json"
+DEFAULT_MANIFEST = REPO_ROOT / "contract" / "issue59_upstream_canonical_v4.json"
 
 
 class ContractError(RuntimeError):
@@ -120,7 +120,8 @@ def _yaml_scalar(text: str, key: str) -> str:
 
 
 def validate_dataset(dataset_root: Path, contract: dict[str, Any]) -> list[str]:
-    dataset = contract["canonical_unified_v3"]
+    dataset_key = next(key for key in contract if key.startswith("canonical_unified_v"))
+    dataset = contract[dataset_key]
     hashes = dataset["file_sha256"]
     checked: list[str] = []
     for relative_path, expected_hash in hashes.items():
@@ -172,8 +173,16 @@ def validate(
     check_dataset: bool = True,
 ) -> dict[str, list[str]]:
     contract = json.loads(manifest_path.read_text(encoding="utf-8"))
+    upstream_contract_path = contract.get("upstream_contract")
+    if upstream_contract_path is not None:
+        upstream_contract = json.loads(
+            (manifest_path.parent / upstream_contract_path).read_text(encoding="utf-8")
+        )
+        for key in ("immutable_upstream", "development_remote"):
+            contract[key] = upstream_contract[key]
+    dataset_key = next(key for key in contract if key.startswith("canonical_unified_v"))
     if dataset_root is None:
-        dataset_root = Path(contract["canonical_unified_v3"]["default_root"])
+        dataset_root = Path(contract[dataset_key]["default_root"])
     result: dict[str, list[str]] = {}
     if check_upstream:
         result["upstream"] = validate_upstream(manifest_path.parent.parent, contract)

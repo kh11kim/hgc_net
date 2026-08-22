@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "purpose": "Issue #59 current unified-v4 training contract; historical upstream and v3 provenance remains in the referenced contract.",
+  "upstream_contract": "issue59_upstream_canonical_v3.json",
+  "canonical_unified_v4": {
+    "default_root": "/home/irsl/datasets/dlr/compiled/scdm_justin_right_vgn_train_10000_reconstruction_view_aligned_v4",
+    "file_sha256": {
+      "dataset.yaml": "b9d4dcde9b3e9e72d0adb08074017c1373e7da70f0307c374bf813c6e2c7e572",
+      "index/splits.json": "8600b3d13de653a913f29827a4fde3b880cc2caec9b027a245535eb9e57a8d0f",
+      "index/scenes.jsonl": "7101aabf18ef01875700d62d8843224214c831053927ac6dbbee2eafc6381cfa",
+      "index/views.jsonl": "f06d3036161a587f706e876e8249f1cbbbdd59be7f5a40631c6880a8396eb9b7",
+      "index/samples.jsonl": "e3ae674cb572a7abec7431232091510fd06e3d8724c61a5c1b51121d75e01009"
+    },
+    "metadata_line_counts": {
+      "index/scenes.jsonl": 10000,
+      "index/views.jsonl": 10000,
+      "index/samples.jsonl": 10000
+    },
+    "split_counts": {"train": 8995, "val": 510, "test": 495},
+    "dataset_contract": {
+      "format": "scdm_unified",
+      "format_version": 2,
+      "sources": ["packed", "dense"],
+      "split_seed": 0,
+      "stats": {
+        "scenes": 10000,
+        "views": 10000,
+        "eligible_objects": 49518,
+        "samples": 10000,
+        "positive_grasps": 5825075,
+        "negative_grasps": 23885725
+      },
+      "hand": {
+        "name": "justin_right_hand_simple",
+        "palm_frame": "palm",
+        "base_link": "right_hand_base_link",
+        "dof": 12,
+        "joint_order": [
+          "right_1thumb1", "right_1thumb2", "right_1thumb3",
+          "right_2index1", "right_2index2", "right_2index3",
+          "right_3middle1", "right_3middle2", "right_3middle3",
+          "right_4ring1", "right_4ring2", "right_4ring3"
+        ]
+      }
+    }
+  },
+  "derived_negative_points": {
+    "default_root": "/home/irsl/datasets/dlr/derived/hgc_derived",
+    "format": "hgc_negative_points_v1",
+    "completed_sample_count": 10000,
+    "point_count": 25000,
+    "positive_match_radius_m": 0.005,
+    "positive_filter": "all_approach_points_no_thumb_visible_mask",
+    "negative_fraction_of_remaining_points": 0.1
+  },
+  "stage4_decisions": {
+    "sparse_point_supervision": {
+      "positive_filter": "all_approach_points_no_thumb_visible_mask",
+      "positive": "Match every canonical positive approach_point to sampled points within 5 mm.",
+      "negative": "Use cached deterministic negatives selected from 10% of rows outside every geometric positive neighborhood."
+    }
+  }
+}

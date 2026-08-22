@@ -25,7 +25,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from justin_hgc.data import DEFAULT_ROOT, JustinCanonicalDataset
+from justin_hgc.data import DEFAULT_DERIVED_ROOT, DEFAULT_ROOT, JustinCanonicalDataset
 from justin_hgc.model import JustinPointNet2
 
 
@@ -228,6 +228,7 @@ def write_provenance(
     config_path: Path,
     config: dict[str, Any],
     dataset_root: Path,
+    derived_root: Path,
     device: torch.device,
     command: list[str],
     train_count: int,
@@ -246,6 +247,7 @@ def write_provenance(
         "device": str(device),
         "cuda_device_name": torch.cuda.get_device_name(device) if device.type == "cuda" else None,
         "dataset_root": str(dataset_root),
+        "derived_root": str(derived_root),
         "train_views": train_count,
         "val_views": val_count,
         "training_config": config,
@@ -258,6 +260,7 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--root", type=Path, default=DEFAULT_ROOT)
+    parser.add_argument("--derived-root", type=Path, default=DEFAULT_DERIVED_ROOT)
     parser.add_argument("--run-root", type=Path, default=DEFAULT_RUN_ROOT)
     parser.add_argument("--run-name", default="justin_hgc")
     parser.add_argument("--resume", type=Path, help="path to an existing last.pt checkpoint")
@@ -304,8 +307,10 @@ def main() -> int:
     if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA was requested but is unavailable")
     seed_everything(int(config["seed"]))
-    train_data = JustinCanonicalDataset(args.root, split="train", sample_ids=args.train_sample_id)
-    val_data = JustinCanonicalDataset(args.root, split="val")
+    train_data = JustinCanonicalDataset(
+        args.root, derived_root=args.derived_root, split="train", sample_ids=args.train_sample_id
+    )
+    val_data = JustinCanonicalDataset(args.root, derived_root=args.derived_root, split="val")
     generator = torch.Generator().manual_seed(int(config["seed"]))
     train_loader = DataLoader(
         train_data,
@@ -335,6 +340,7 @@ def main() -> int:
             config_path=args.config,
             config=config,
             dataset_root=args.root,
+            derived_root=args.derived_root,
             device=device,
             command=sys.argv,
             train_count=len(train_data),

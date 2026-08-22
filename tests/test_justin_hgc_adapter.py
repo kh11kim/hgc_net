@@ -23,6 +23,7 @@ from justin_hgc.labels import make_sparse_template_labels
 from justin_hgc.postprocess import aggressive_nms, top_side_mask
 from justin_hgc.bin_pose import DEFAULT_BIN_SPEC, bin_regression_loss, target_range_counts
 from justin_hgc.model import JustinHGCOutputHead
+from justin_hgc.negative_points import select_negative_point_indices
 from justin_hgc.runtime import decode_justin_candidates
 from justin_hgc.templates import TEMPLATE_NAMES, load_template_q_open
 
@@ -93,8 +94,50 @@ class SparseLabelTest(unittest.TestCase):
         self.assertEqual(labels.graspable[1, 1], 1)
         self.assertTrue(np.all(labels.graspable[:2, [0, 2]] == -1))
         self.assertEqual(np.count_nonzero(labels.graspable == 0), 0)  # floor(0.1 * 3) == 0
-        self.assertEqual(labels.visible_positive_count, 1)
+        self.assertEqual(labels.canonical_positive_count, 1)
         self.assertEqual(labels.matched_positive_count, 1)
+
+    def test_negative_sidecar_selection_excludes_all_geometric_positive_rows(self):
+        points = np.arange(60, dtype=np.float32).reshape(20, 3) * 0.01
+        approach_points = points[[2, 7]]
+        first = select_negative_point_indices(
+            points=points,
+            approach_points=approach_points,
+            negative_fraction=0.50,
+            radius_m=0.001,
+            key="scene_view_001",
+        )
+        again = select_negative_point_indices(
+            points=points,
+            approach_points=approach_points,
+            negative_fraction=0.50,
+            radius_m=0.001,
+            key="scene_view_001",
+        )
+        np.testing.assert_array_equal(first.negative_point_indices, again.negative_point_indices)
+        self.assertEqual(first.positive_point_count, 2)
+        self.assertEqual(first.remaining_point_count, 18)
+        self.assertEqual(len(first.negative_point_indices), 9)
+        self.assertTrue(set(first.negative_point_indices).isdisjoint({2, 7}))
+
+    def test_explicit_sidecar_indices_replace_online_negative_sampling(self):
+        points = np.asarray([[0, 0, 0], [0.02, 0, 0], [0.03, 0, 0]], dtype=np.float32)
+        labels = make_sparse_template_labels(
+            points=points,
+            palm_pose9d=np.asarray([[0, 0, 0.1, 1, 0, 0, 0, -1, 0]], dtype=np.float32),
+            approach_point=np.asarray([[0, 0, 0]], dtype=np.float32),
+            q_contact=np.ones((1, 12), dtype=np.float32),
+            q_squeeze=np.ones((1, 12), dtype=np.float32),
+            template_index=np.asarray([0]),
+            source_grasp_index=np.asarray([1]),
+            num_templates=3,
+            negative_fraction=1.0,
+            negative_point_indices=np.asarray([2]),
+            key="fixture",
+        )
+        self.assertTrue(np.all(labels.graspable[2] == 0))
+        self.assertTrue(np.all(labels.graspable[1] == -1))
+        self.assertEqual(labels.graspable[0, 0], 1)
 
 
 class PostprocessTest(unittest.TestCase):

@@ -39,6 +39,11 @@ class ContractValidatorTest(unittest.TestCase):
             ],
         )
 
+    def test_current_contract_disables_thumb_visibility_filter(self):
+        contract = json.loads((REPO_ROOT / "contract" / "issue59_upstream_canonical_v4.json").read_text())
+        supervision = contract["stage4_decisions"]["sparse_point_supervision"]
+        self.assertEqual(supervision["positive_filter"], "all_approach_points_no_thumb_visible_mask")
+
     def test_live_upstream_contract(self):
         result = validator.validate(check_dataset=False)
         self.assertIn("model.py", result["upstream"])

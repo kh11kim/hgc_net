@@ -1,6 +1,7 @@
 # Issue #59 native Justin-right HGC adapter.  This does not mutate upstream config.
 data:
-  root: /home/irsl/datasets/dlr/compiled/scdm_justin_right_vgn_train_10000_reconstruction_view_aligned_v3
+  root: /home/irsl/datasets/dlr/compiled/scdm_justin_right_vgn_train_10000_reconstruction_view_aligned_v4
+  derived_root: /home/irsl/datasets/dlr/derived/hgc_derived
   split_seed: 0
   point_count: 25000
   centered_grid_edge_m: 0.5

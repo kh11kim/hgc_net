@@ -177,24 +177,29 @@ class PaperModifiedHGCHead(nn.Module):
             raise ValueError(
                 f"positive_mask shape {positive_mask.shape} does not match selected rows {orientation_logits.shape[:2]}"
             )
-        if not torch.any(positive_mask):
-            raise ValueError("paper-modified batch has no positive pose rows")
-
         orientation_target = batch["orientation_bin"].long()
         pose_target = batch["pose_target"].to(dtype=residual.dtype)
         if orientation_target.shape != orientation_logits.shape[:2] or pose_target.shape != (*orientation_logits.shape[:2], 4):
             raise ValueError("paper pose target shapes do not match selected rows")
-        cls_loss = F.cross_entropy(
-            orientation_logits[positive_mask], orientation_target[positive_mask]
-        )
-        reg_loss = F.smooth_l1_loss(residual[positive_mask], pose_target[positive_mask])
-
         q_contact = batch["q_contact"].to(dtype=q_contact_pred.dtype)
         if q_contact.shape != q_contact_pred.shape:
             raise ValueError(
                 f"q_contact target shape {q_contact.shape} does not match output {q_contact_pred.shape}"
             )
-        contact_loss = F.smooth_l1_loss(q_contact_pred[positive_mask], q_contact[positive_mask])
+        if torch.any(positive_mask):
+            cls_loss = F.cross_entropy(
+                orientation_logits[positive_mask], orientation_target[positive_mask]
+            )
+            reg_loss = F.smooth_l1_loss(
+                residual[positive_mask], pose_target[positive_mask]
+            )
+            contact_loss = F.smooth_l1_loss(
+                q_contact_pred[positive_mask], q_contact[positive_mask]
+            )
+        else:
+            cls_loss = orientation_logits.sum() * 0.0
+            reg_loss = residual.sum() * 0.0
+            contact_loss = q_contact_pred.sum() * 0.0
         total_loss = 5.0 * seg_loss + cls_loss + reg_loss + contact_loss
         return {
             "seg_loss": seg_loss,

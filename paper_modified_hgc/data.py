@@ -214,11 +214,6 @@ class PaperModifiedCanonicalDataset(Dataset[dict[str, torch.Tensor]]):
         )
         direct_axis = (approach_norm > 1.0e-8) & (axis_cosine >= 0.9999)
         tilted_excluded_count = int((~direct_axis).sum())
-        if not np.any(direct_axis):
-            raise ValueError(
-                f"{record['sample_id']}: no direct-axis positive grasp remains "
-                "after excluding tilted approach rays"
-            )
         palm_pose = palm_pose[direct_axis]
         approach = approach[direct_axis]
         q_contact = q_contact[direct_axis]
@@ -226,7 +221,9 @@ class PaperModifiedCanonicalDataset(Dataset[dict[str, torch.Tensor]]):
         if np.any((template < 0) | (template >= len(TEMPLATE_NAMES))):
             raise ValueError(f"{record['sample_id']}: grasp_type_idx outside 0..2")
         rng = np.random.default_rng(stable_seed(record["sample_id"], salt=f"paper-modified:{self.seed}"))
-        if len(palm_pose) >= self.num_grasps:
+        if len(palm_pose) == 0:
+            selected = np.empty((0,), dtype=np.int64)
+        elif len(palm_pose) >= self.num_grasps:
             selected = rng.choice(len(palm_pose), size=self.num_grasps, replace=False)
         else:
             selected = np.concatenate(

@@ -15,7 +15,7 @@ import torch
 
 from paper_modified_hgc.data import PaperModifiedCanonicalDataset, _grid_point_to_index
 from paper_modified_hgc.encoder import ConvBlock3D, ThreeDFPNEncoder
-from paper_modified_hgc.model import PaperModifiedHGC
+from paper_modified_hgc.model import PaperModifiedHGC, PaperModifiedHGCHead
 from paper_modified_hgc.pose import (
     ORIENTATION_BINS,
     bin_and_residual_to_mat,
@@ -117,6 +117,31 @@ hand:
 
 
 class PaperModifiedDataTest(unittest.TestCase):
+    def test_all_fallback_sample_keeps_negative_quality_supervision(self) -> None:
+        dataset = PaperModifiedCanonicalDataset(
+            split="train", sample_ids=["dense_001811_view000"]
+        )
+        sample = dataset[0]
+        self.assertEqual(int(sample["positive_feature_count"]), 0)
+        self.assertEqual(int(sample["negative_feature_count"]), 100)
+        self.assertEqual(float(sample["quality_target"].sum()), 0.0)
+
+        count = len(sample["feature_indices"])
+        batch = {key: value.unsqueeze(0) for key, value in sample.items()}
+        prediction = (
+            torch.zeros_like(batch["quality_target"], requires_grad=True),
+            torch.zeros((1, count, ORIENTATION_BINS), requires_grad=True),
+            torch.zeros((1, count, 4), requires_grad=True),
+            torch.zeros((1, count, 12), requires_grad=True),
+        )
+        losses = PaperModifiedHGCHead(feature_dim=4).loss(prediction, batch)
+        self.assertEqual(float(losses["cls_loss"].detach()), 0.0)
+        self.assertEqual(float(losses["reg_loss"].detach()), 0.0)
+        self.assertEqual(float(losses["contact_loss"].detach()), 0.0)
+        self.assertTrue(torch.isfinite(losses["total_loss"]))
+        losses["total_loss"].backward()
+        self.assertIsNotNone(prediction[0].grad)
+
     def test_v4_full_occupancy_and_ground_are_two_dhw_channels(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root, gripper = _fixture_root(Path(temporary))

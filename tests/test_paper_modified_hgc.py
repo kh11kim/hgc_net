@@ -13,7 +13,11 @@ from unittest.mock import patch
 import numpy as np
 import torch
 
-from paper_modified_hgc.data import PaperModifiedCanonicalDataset, _grid_point_to_index
+from paper_modified_hgc.data import (
+    PaperModifiedCanonicalDataset,
+    _grid_point_to_index,
+    collate_paper_modified,
+)
 from paper_modified_hgc.encoder import ConvBlock3D, ThreeDFPNEncoder
 from paper_modified_hgc.model import PaperModifiedHGC, PaperModifiedHGCHead
 from paper_modified_hgc.pose import (
@@ -117,6 +121,27 @@ hand:
 
 
 class PaperModifiedDataTest(unittest.TestCase):
+    def test_collate_pads_variable_feature_rows_outside_positive_loss(self) -> None:
+        def item(rows: int) -> dict[str, torch.Tensor]:
+            return {
+                "input_grid": torch.zeros((2, 4, 4, 4)),
+                "quality_target": torch.zeros((1, 4, 4, 4)),
+                "feature_indices": torch.ones((rows, 3), dtype=torch.long),
+                "positive_mask": torch.ones((rows,), dtype=torch.bool),
+                "orientation_bin": torch.zeros((rows,), dtype=torch.long),
+                "pose_target": torch.zeros((rows, 4)),
+                "q_contact": torch.zeros((rows, 12)),
+                "tilted_excluded_count": torch.tensor(0),
+            }
+
+        batch = collate_paper_modified([item(1), item(3)])
+        self.assertEqual(tuple(batch["input_grid"].shape), (2, 2, 4, 4, 4))
+        self.assertEqual(tuple(batch["feature_indices"].shape), (2, 3, 3))
+        self.assertFalse(bool(batch["positive_mask"][0, 1:].any()))
+        self.assertTrue(
+            torch.equal(batch["orientation_bin"][0, 1:], torch.tensor([-1, -1]))
+        )
+
     def test_all_fallback_sample_keeps_negative_quality_supervision(self) -> None:
         dataset = PaperModifiedCanonicalDataset(
             split="train", sample_ids=["dense_001811_view000"]

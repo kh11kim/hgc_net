@@ -34,6 +34,43 @@ GRID_SIZE = 64
 GRID_EDGE = GRID_EDGE_M
 
 
+_BATCH_DENSE_KEYS = ("input_grid", "quality_target")
+_BATCH_ROW_KEYS = (
+    "feature_indices",
+    "positive_mask",
+    "orientation_bin",
+    "pose_target",
+    "q_contact",
+)
+
+
+def collate_paper_modified(
+    items: list[dict[str, torch.Tensor]],
+) -> dict[str, torch.Tensor]:
+    """Batch trainer tensors while padding variable selected-feature rows."""
+
+    if not items:
+        raise ValueError("cannot collate an empty paper-modified batch")
+    max_rows = max(int(item["feature_indices"].shape[0]) for item in items)
+    output = {
+        key: torch.stack([item[key] for item in items])
+        for key in _BATCH_DENSE_KEYS
+    }
+    for key in _BATCH_ROW_KEYS:
+        exemplar = items[0][key]
+        padded = exemplar.new_zeros((len(items), max_rows, *exemplar.shape[1:]))
+        if key == "orientation_bin":
+            padded.fill_(-1)
+        for batch_index, item in enumerate(items):
+            rows = int(item[key].shape[0])
+            padded[batch_index, :rows] = item[key]
+        output[key] = padded
+    output["tilted_excluded_count"] = torch.stack(
+        [item["tilted_excluded_count"] for item in items]
+    )
+    return output
+
+
 def _json_lines(path: Path) -> list[dict[str, Any]]:
     with path.open(encoding="utf-8") as source:
         return [json.loads(line) for line in source if line.strip()]
@@ -448,4 +485,4 @@ class PaperModifiedCanonicalDataset(Dataset[dict[str, torch.Tensor]]):
         }
 
 
-__all__ = ["PaperModifiedCanonicalDataset"]
+__all__ = ["PaperModifiedCanonicalDataset", "collate_paper_modified"]

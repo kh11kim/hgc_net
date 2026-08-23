@@ -29,7 +29,7 @@ if str(REPO_ROOT) not in sys.path:
 from justin_hgc.data import DEFAULT_DERIVED_ROOT, DEFAULT_ROOT, JustinCanonicalDataset
 from justin_hgc.bin_pose import BinPoseSpec
 from justin_hgc.model import JustinPointNet2
-from paper_modified_hgc.data import PaperModifiedCanonicalDataset
+from paper_modified_hgc.data import PaperModifiedCanonicalDataset, collate_paper_modified
 from paper_modified_hgc.model import PaperModifiedHGC
 
 
@@ -650,6 +650,7 @@ def main() -> int:
         pin_memory=device.type == "cuda",
         worker_init_fn=_worker_init,
         generator=generator,
+        collate_fn=collate_paper_modified if config["arm"] == "paper_modified" else None,
     )
     val_loader = DataLoader(
         val_data,
@@ -658,6 +659,7 @@ def main() -> int:
         num_workers=int(config["workers"]),
         pin_memory=device.type == "cuda",
         worker_init_fn=_worker_init,
+        collate_fn=collate_paper_modified if config["arm"] == "paper_modified" else None,
     )
     model = build_model(config).to(device)
     optimizer = build_optimizer(model, config)

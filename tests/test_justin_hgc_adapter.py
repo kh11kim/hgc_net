@@ -76,6 +76,26 @@ class GeometryTest(unittest.TestCase):
         np.testing.assert_allclose(target[:, 0], [10.0])
         np.testing.assert_allclose(target[:, 2], [0.0])
 
+    def test_circular_pose_targets_remain_inside_half_open_bins_after_float32(self):
+        angle = np.deg2rad(-1.0e-7)
+        axis = np.asarray(
+            [np.cos(angle) / np.sqrt(2.0), np.sin(angle) / np.sqrt(2.0), 1.0 / np.sqrt(2.0)],
+            dtype=np.float64,
+        )
+        closing = np.asarray([0.0, 1.0, 0.0], dtype=np.float64)
+        closing -= np.dot(closing, axis) * axis
+        closing /= np.linalg.norm(closing)
+        first = np.cross(axis, closing)
+        rotation = np.stack((first, closing, -axis), axis=1)
+        palm = np.concatenate((axis * 0.1, rotation[:, 0], rotation[:, 1]))[None]
+        target, _ = pose9d_to_bin_target(
+            palm.astype(np.float32), np.zeros((1, 3), dtype=np.float32)
+        )
+        self.assertGreaterEqual(float(target[0, 1]), 0.0)
+        self.assertLess(float(target[0, 1]), 360.0)
+        self.assertGreaterEqual(float(target[0, 3]), 0.0)
+        self.assertLess(float(target[0, 3]), 360.0)
+
     def test_pose_target_rotation_round_trip_restores_canonical_palm_frame(self):
         pose = np.asarray(
             [[0.10, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0]],

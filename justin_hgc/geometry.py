@@ -150,7 +150,15 @@ def pose9d_to_bin_target(palm_pose9d: np.ndarray, approach_point: np.ndarray) ->
     )
     closing = rotation[..., :, 1]
     grasp_angle = np.degrees(np.arctan2(closing[..., 1], closing[..., 0])) % 360.0
-    return np.stack((depth_cm, azimuth, elevation, grasp_angle), axis=-1).astype(np.float32), surface_to_palm.astype(np.float32)
+    target = np.stack((depth_cm, azimuth, elevation, grasp_angle), axis=-1).astype(
+        np.float32
+    )
+    # Values infinitesimally below 360 degrees can round to exactly 360 during
+    # float32 conversion. Re-wrap the two circular fields in their stored dtype
+    # so every valid direction remains inside the half-open [0, 360) bins.
+    target[..., 1] = np.remainder(target[..., 1], np.float32(360.0))
+    target[..., 3] = np.remainder(target[..., 3], np.float32(360.0))
+    return target, surface_to_palm.astype(np.float32)
 
 
 def palm_axis_aligned_mask(

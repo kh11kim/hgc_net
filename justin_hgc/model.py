@@ -2,8 +2,8 @@
 
 This file intentionally does not edit ``model.py``.  The set-abstraction and
 feature-propagation stack below is structurally the official upstream stack; the
-only learned boundary change is three Justin template heads with 12+12 joint
-targets instead of five DLR taxonomies with one 20-DoF target.
+only learned boundary change is three Justin template heads with a 12-DoF
+contact target instead of five DLR taxonomies with one 20-DoF target.
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ class JustinHGCOutputHead(nn.Module):
         super().__init__()
         self.num_templates = int(num_templates)
         self.bin_spec = bin_spec
-        self.channels_per_template = 2 + bin_spec.channels + 24  # gp + pose + q_contact/q_squeeze
+        self.channels_per_template = 2 + bin_spec.channels + 12  # gp + pose + q_contact
         self.conv1 = nn.Conv1d(128, 128, kernel_size=1, bias=False)
         self.conv2 = nn.Conv1d(128, 128, kernel_size=1, bias=False)
         self.conv3 = nn.Conv1d(128, self.channels_per_template * self.num_templates, kernel_size=1, bias=False)
@@ -52,8 +52,8 @@ class JustinHGCOutputHead(nn.Module):
         self.drop1 = nn.Dropout(0.5)
         self.drop2 = nn.Dropout(0.5)
 
-    def forward(self, feature: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Return gp, pose, q_contact, q_squeeze as B,N,*,template tensors."""
+    def forward(self, feature: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return gp, pose and q_contact as B,N,*,template tensors."""
         if feature.ndim != 3 or feature.shape[1] != 128:
             raise ValueError(f"expected PointNet++ feature Bx128xN, got {tuple(feature.shape)}")
         feature = F.leaky_relu(self.bn1(self.conv1(feature)), negative_slope=0.2)
@@ -68,22 +68,20 @@ class JustinHGCOutputHead(nn.Module):
         pose_end = 2 + self.bin_spec.channels
         pose = prediction[:, :, 2:pose_end, :]
         q_contact = prediction[:, :, pose_end : pose_end + 12, :]
-        q_squeeze = prediction[:, :, pose_end + 12 : pose_end + 24, :]
-        return gp, pose, q_contact, q_squeeze
+        return gp, pose, q_contact
 
     def loss(
         self,
-        prediction: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
+        prediction: tuple[torch.Tensor, torch.Tensor, torch.Tensor],
         batch: dict[str, torch.Tensor],
         *,
         graspable_weight: tuple[float, float] = (1.0, 10.0),
     ) -> dict[str, torch.Tensor]:
         """Use upstream sparse CE + bin/residual loss per Justin template."""
-        gp, pose, q_contact, q_squeeze = prediction
+        gp, pose, q_contact = prediction
         labels = batch["template_graspable"].long()
         pose_target = batch["template_pose"].to(dtype=pose.dtype)
         contact_target = batch["template_q_contact"].to(dtype=q_contact.dtype)
-        squeeze_target = batch["template_q_squeeze"].to(dtype=q_squeeze.dtype)
         if labels.shape != (gp.shape[0], gp.shape[1], self.num_templates):
             raise ValueError("template_graspable shape does not match prediction")
         weight = torch.tensor(graspable_weight, dtype=gp.dtype, device=gp.device)
@@ -107,11 +105,9 @@ class JustinHGCOutputHead(nn.Module):
                     )
                 _, pose_loss = bin_regression_loss(pose[:, :, :, template][positive], selected_target, self.bin_spec)
                 contact_loss = F.mse_loss(q_contact[:, :, :, template][positive], contact_target[:, :, template][positive])
-                squeeze_loss = F.mse_loss(q_squeeze[:, :, :, template][positive], squeeze_target[:, :, template][positive])
-                template_loss = template_loss + pose_loss + contact_loss + squeeze_loss
+                template_loss = template_loss + pose_loss + contact_loss
                 result[f"template{template}/pose_loss"] = pose_loss
                 result[f"template{template}/q_contact_loss"] = contact_loss
-                result[f"template{template}/q_squeeze_loss"] = squeeze_loss
             result[f"template{template}/loss"] = template_loss
             total = total + template_loss
         result["total_loss"] = total
@@ -150,10 +146,10 @@ class JustinPointNet2(nn.Module):
         l1_points = self.fp2(l1_xyz, l2_xyz, l1_points, l2_points)
         return self.fp1(xyz.contiguous(), l1_xyz, torch.cat((xyz.transpose(1, 2), normalized_points), dim=1), l1_points)
 
-    def forward(self, xyz: torch.Tensor, normalized_points: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(self, xyz: torch.Tensor, normalized_points: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         return self.head(self.encode(xyz, normalized_points))
 
-    def forward_batch(self, batch: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward_batch(self, batch: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Shared trainer seam for the point and voxel HGC arms."""
         if "point" not in batch or "norm_point" not in batch:
             raise KeyError("upstream-faithful batch must contain point and norm_point")

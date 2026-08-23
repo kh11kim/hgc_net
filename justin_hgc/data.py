@@ -24,8 +24,8 @@ from .labels import make_sparse_template_labels
 from .templates import TEMPLATE_NAMES, load_template_q_open
 
 
-DEFAULT_ROOT = Path("/home/irsl/datasets/dlr/compiled/scdm_justin_right_vgn_train_10000_reconstruction_view_aligned_v4")
-DEFAULT_DERIVED_ROOT = Path("/home/irsl/datasets/dlr/derived/hgc_derived")
+DEFAULT_ROOT = Path("/home/irsl/datasets/dlr/compiled/scdm_justin_right_vgn_train_10000_reconstruction_view_aligned_v5")
+DEFAULT_DERIVED_ROOT = DEFAULT_ROOT / "derived" / "hgc"
 DEFAULT_GRIPPER_CONFIG = Path("/home/irsl/datasets/dlr/grippers/justin_hand/justin_right_hand_simple.yaml")
 
 
@@ -130,7 +130,7 @@ class JustinCanonicalDataset(Dataset[dict[str, torch.Tensor]]):
 
     def _positive_payload(self, record: dict[str, Any]) -> dict[str, np.ndarray]:
         with np.load(self.root / record["grasp_path"], allow_pickle=False) as payload:
-            required = ("palm_pose9d", "approach_point", "q_contact", "q_squeeze", "grasp_type_idx", "source_grasp_index")
+            required = ("palm_pose9d", "approach_point", "q_contact", "grasp_type_idx", "source_grasp_index")
             missing = [key for key in required if key not in payload]
             if missing:
                 raise KeyError(f"{record['grasp_path']} missing {missing}")
@@ -138,7 +138,6 @@ class JustinCanonicalDataset(Dataset[dict[str, torch.Tensor]]):
                 "palm_pose9d": np.asarray(payload["palm_pose9d"], dtype=np.float32),
                 "approach_point": np.asarray(payload["approach_point"], dtype=np.float32),
                 "q_contact": np.asarray(payload["q_contact"], dtype=np.float32),
-                "q_squeeze": np.asarray(payload["q_squeeze"], dtype=np.float32),
                 "template_index": np.asarray(payload["grasp_type_idx"], dtype=np.int64),
                 "source_grasp_index": np.asarray(payload["source_grasp_index"], dtype=np.int64),
             }
@@ -211,10 +210,12 @@ class JustinCanonicalDataset(Dataset[dict[str, torch.Tensor]]):
             "template_graspable": labels.graspable,
             "template_pose": labels.pose,
             "template_q_contact": labels.q_contact,
-            "template_q_squeeze": labels.q_squeeze,
             "sample_indices": point_indices,
             "visible_crop_count": np.asarray(len(cropped), dtype=np.int64),
             "canonical_positive_count": np.asarray(labels.canonical_positive_count, dtype=np.int64),
+            "pose_eligible_positive_count": np.asarray(labels.pose_eligible_positive_count, dtype=np.int64),
+            "rejected_tilted_positive_count": np.asarray(labels.rejected_tilted_positive_count, dtype=np.int64),
+            "tilted_excluded_count": np.asarray(labels.rejected_tilted_positive_count, dtype=np.int64),
             "matched_positive_count": np.asarray(labels.matched_positive_count, dtype=np.int64),
             "sample_id": record["sample_id"],
         }

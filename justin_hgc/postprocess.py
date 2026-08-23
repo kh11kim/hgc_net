@@ -47,7 +47,9 @@ def aggressive_nms(
     # Keep the official implementation's score ordering and iterative indexing,
     # including its behavior for equal scores, rather than substituting a library
     # NMS routine.
-    remaining = np.argsort(scores)
+    # Stable ties make equal-score cutoff behavior reproducible across runtime
+    # calls while preserving the upstream highest-score-first iteration.
+    remaining = np.argsort(scores, kind="stable")
     kept: list[int] = []
     angle_threshold = np.deg2rad(angle_threshold_deg)
     while len(remaining):

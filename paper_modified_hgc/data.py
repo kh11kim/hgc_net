@@ -19,12 +19,13 @@ from torch.utils.data import Dataset
 
 from justin_hgc.geometry import GRID_EDGE_M, stable_seed
 from justin_hgc.templates import TEMPLATE_NAMES, load_template_q_open
-from justin_hgc.geometry import pose9d_to_bin_target
+
+from .pose import pose9d_to_targets, rot6d_to_mat
 
 
 DEFAULT_ROOT = Path(
     "/home/irsl/datasets/dlr/compiled/"
-    "scdm_justin_right_vgn_train_10000_reconstruction_view_aligned_v4"
+    "scdm_justin_right_vgn_train_10000_reconstruction_view_aligned_v5"
 )
 DEFAULT_GRIPPER_CONFIG = Path(
     "/home/irsl/datasets/dlr/grippers/justin_hand/justin_right_hand_simple.yaml"
@@ -75,13 +76,15 @@ def _grid_index_to_point(indices: np.ndarray, *, size: int = GRID_SIZE, edge: fl
 class PaperModifiedCanonicalDataset(Dataset[dict[str, torch.Tensor]]):
     """One GT full-occupancy/ground voxel scene and a fixed grasp budget.
 
-    ``template_graspable`` uses the shared Justin head contract: ``-1`` means
-    unsupervised for a template at a selected voxel and ``1`` marks the
-    selected grasp's template.  Positive rows leave the other templates
-    ignored.  In addition, deterministic object-occupancy voxel rows are
-    labelled ``0`` for all three templates.  These GT-derived negatives do
-    not use the canonical negative-grasp payload (which has no surface
-    anchor) and give the shared graspability CE both classes to learn.
+    The reference arm uses a dense quality target over all 64^3 voxels and
+    evaluates pose/contact targets only at the selected positive grasp rows.
+    Deterministic object-occupancy rows are retained in the adapter for
+    provenance and feature-shape checks, but are ignored by the paper pose and
+    finger losses.  ``template_graspable`` is kept as a compatibility view of
+    the canonical three grasp-type labels; the paper head itself has no
+    template axis.  ``q_open``/``q_squeeze`` are execution waypoints derived
+    by the grasp-sim client from learned ``q_contact``; neither is a
+    paper-arm training target.
     """
 
     def __init__(
@@ -173,7 +176,6 @@ class PaperModifiedCanonicalDataset(Dataset[dict[str, torch.Tensor]]):
                 "palm_pose9d",
                 "approach_point",
                 "q_contact",
-                "q_squeeze",
                 "grasp_type_idx",
             )
             missing = [key for key in required if key not in payload]
@@ -182,13 +184,12 @@ class PaperModifiedCanonicalDataset(Dataset[dict[str, torch.Tensor]]):
             palm_pose = np.asarray(payload["palm_pose9d"], dtype=np.float32)
             approach = np.asarray(payload["approach_point"], dtype=np.float32)
             q_contact = np.asarray(payload["q_contact"], dtype=np.float32)
-            q_squeeze = np.asarray(payload["q_squeeze"], dtype=np.float32)
             template = np.asarray(payload["grasp_type_idx"], dtype=np.int64)
         if palm_pose.ndim != 2 or palm_pose.shape[1] != 9:
             raise ValueError(f"{record['sample_id']}: palm_pose9d must be Nx9")
         if approach.shape != (len(palm_pose), 3):
             raise ValueError(f"{record['sample_id']}: approach_point shape mismatch")
-        if q_contact.shape != (len(palm_pose), 12) or q_squeeze.shape != q_contact.shape:
+        if q_contact.shape != (len(palm_pose), 12):
             raise ValueError(f"{record['sample_id']}: Justin joint target shape mismatch")
         if template.shape != (len(palm_pose),):
             raise ValueError(f"{record['sample_id']}: grasp_type_idx shape mismatch")
@@ -198,8 +199,30 @@ class PaperModifiedCanonicalDataset(Dataset[dict[str, torch.Tensor]]):
         palm_pose = palm_pose[inside]
         approach = approach[inside]
         q_contact = q_contact[inside]
-        q_squeeze = q_squeeze[inside]
         template = template[inside]
+        # The paper codec has one scalar depth along palm local +z.  Canonical
+        # DFC postprocess stores a 10-degree tilt-ray fallback for a minority
+        # of grasps; those anchors cannot be reconstructed by this scalar
+        # depth representation and must not enter supervision.
+        rotation = rot6d_to_mat(torch.from_numpy(palm_pose[:, 3:])).numpy()
+        approach_vector = approach - palm_pose[:, :3]
+        approach_norm = np.linalg.norm(approach_vector, axis=1)
+        palm_z = rotation[:, :, 2]
+        axis_cosine = np.divide(
+            np.sum(approach_vector * palm_z, axis=1),
+            np.maximum(approach_norm, 1.0e-12),
+        )
+        direct_axis = (approach_norm > 1.0e-8) & (axis_cosine >= 0.9999)
+        tilted_excluded_count = int((~direct_axis).sum())
+        if not np.any(direct_axis):
+            raise ValueError(
+                f"{record['sample_id']}: no direct-axis positive grasp remains "
+                "after excluding tilted approach rays"
+            )
+        palm_pose = palm_pose[direct_axis]
+        approach = approach[direct_axis]
+        q_contact = q_contact[direct_axis]
+        template = template[direct_axis]
         if np.any((template < 0) | (template >= len(TEMPLATE_NAMES))):
             raise ValueError(f"{record['sample_id']}: grasp_type_idx outside 0..2")
         rng = np.random.default_rng(stable_seed(record["sample_id"], salt=f"paper-modified:{self.seed}"))
@@ -216,13 +239,13 @@ class PaperModifiedCanonicalDataset(Dataset[dict[str, torch.Tensor]]):
             "palm_pose9d": palm_pose[selected],
             "approach_point": approach[selected],
             "q_contact": q_contact[selected],
-            "q_squeeze": q_squeeze[selected],
             "template": template[selected],
             # Keep the complete inside-grid canonical positive pool separate
             # from the selected training budget.  Every member of this pool
             # must be excluded from GT-voxel negative sampling.
             "all_inside_approach_point": approach,
             "all_inside_count": np.asarray(len(palm_pose), dtype=np.int64),
+            "tilted_excluded_count": np.asarray(tilted_excluded_count, dtype=np.int64),
         }
 
     def load_numpy(self, index: int) -> dict[str, Any]:
@@ -305,17 +328,21 @@ class PaperModifiedCanonicalDataset(Dataset[dict[str, torch.Tensor]]):
         count = positive_count + negative_count
         graspable = np.full((count, len(TEMPLATE_NAMES)), -1, dtype=np.int64)
         if positive_count:
-            pose_target, _ = pose9d_to_bin_target(selected["palm_pose9d"], positive_approach)
+            orientation_bin_t, paper_pose_target_t = pose9d_to_targets(
+                torch.from_numpy(selected["palm_pose9d"]),
+                torch.from_numpy(positive_approach),
+            )
+            orientation_bin = orientation_bin_t.numpy().astype(np.int64, copy=False)
+            pose_target = paper_pose_target_t.numpy().astype(np.float32, copy=False)
         else:
+            orientation_bin = np.empty((0,), dtype=np.int64)
             pose_target = np.empty((0, 4), dtype=np.float32)
         pose = np.zeros((count, len(TEMPLATE_NAMES), 4), dtype=np.float32)
         contact = np.zeros((count, len(TEMPLATE_NAMES), 12), dtype=np.float32)
-        squeeze = np.zeros((count, len(TEMPLATE_NAMES), 12), dtype=np.float32)
         for row, grasp_template in enumerate(template):
             graspable[row, int(grasp_template)] = 1
             pose[row, int(grasp_template)] = pose_target[row]
             contact[row, int(grasp_template)] = selected["q_contact"][row]
-            squeeze[row, int(grasp_template)] = selected["q_squeeze"][row]
         if negative_count:
             graspable[positive_count:, :] = 0
         q_open = np.broadcast_to(self.template_q_open[None, :, :], (count, len(TEMPLATE_NAMES), 12)).copy()
@@ -340,6 +367,46 @@ class PaperModifiedCanonicalDataset(Dataset[dict[str, torch.Tensor]]):
             ),
             axis=0,
         )
+        positive_mask = np.concatenate(
+            (
+                np.ones((positive_count,), dtype=np.bool_),
+                np.zeros((negative_count,), dtype=np.bool_),
+            ),
+            axis=0,
+        )
+        orientation_bin_selected = np.concatenate(
+            (
+                orientation_bin,
+                np.full((negative_count,), -1, dtype=np.int64),
+            ),
+            axis=0,
+        )
+        pose_target_selected = np.concatenate(
+            (
+                pose_target,
+                np.zeros((negative_count, 4), dtype=np.float32),
+            ),
+            axis=0,
+        )
+        # The reference dense quality label marks the selected feasible scene
+        # anchors.  Every unselected voxel remains the focal-loss negative;
+        # the auxiliary negative feature rows above are not used to fabricate
+        # an additional quality target.
+        quality_target = np.zeros((1, self.grid_size, self.grid_size, self.grid_size), dtype=np.float32)
+        if positive_count:
+            quality_target[
+                0,
+                positive_indices[:, 0],
+                positive_indices[:, 1],
+                positive_indices[:, 2],
+            ] = 1.0
+        row_q_contact = np.concatenate(
+            (
+                selected["q_contact"].astype(np.float32, copy=False),
+                np.zeros((negative_count, 12), dtype=np.float32),
+            ),
+            axis=0,
+        )
         return {
             "input_grid": input_grid,
             # These explicit channel views retain the vocabulary used by the
@@ -357,12 +424,17 @@ class PaperModifiedCanonicalDataset(Dataset[dict[str, torch.Tensor]]):
             "template_graspable": graspable,
             "template_pose": pose,
             "template_q_contact": contact,
-            "template_q_squeeze": squeeze,
             "template_q_open": q_open,
+            "positive_mask": positive_mask,
+            "quality_target": quality_target,
+            "orientation_bin": orientation_bin_selected,
+            "pose_target": pose_target_selected,
+            "q_contact": row_q_contact,
             "q_open": q_open_selected,
             "palm_pose9d": palm_pose9d,
             "grasp_type_idx": grasp_type_idx,
             "canonical_positive_count": selected["all_inside_count"],
+            "tilted_excluded_count": selected["tilted_excluded_count"],
             "positive_feature_count": np.asarray(positive_count, dtype=np.int64),
             "all_positive_feature_count": np.asarray(len(all_positive_indices), dtype=np.int64),
             "negative_feature_count": np.asarray(negative_count, dtype=np.int64),

@@ -7,6 +7,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import torch
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
@@ -15,6 +17,12 @@ SPEC = importlib.util.spec_from_file_location(
 validator = importlib.util.module_from_spec(SPEC)
 assert SPEC and SPEC.loader
 SPEC.loader.exec_module(validator)
+GENERATOR_SPEC = importlib.util.spec_from_file_location(
+    "issue59_negative_generator", REPO_ROOT / "tools" / "generate_hgc_negative_points.py"
+)
+negative_generator = importlib.util.module_from_spec(GENERATOR_SPEC)
+assert GENERATOR_SPEC and GENERATOR_SPEC.loader
+GENERATOR_SPEC.loader.exec_module(negative_generator)
 
 
 class ContractValidatorTest(unittest.TestCase):
@@ -40,14 +48,37 @@ class ContractValidatorTest(unittest.TestCase):
         )
 
     def test_current_contract_disables_thumb_visibility_filter(self):
-        contract = json.loads((REPO_ROOT / "contract" / "issue59_upstream_canonical_v4.json").read_text())
+        contract = json.loads((REPO_ROOT / "contract" / "issue59_upstream_canonical_v5.json").read_text())
         supervision = contract["stage4_decisions"]["sparse_point_supervision"]
-        self.assertEqual(supervision["positive_filter"], "all_approach_points_no_thumb_visible_mask")
+        self.assertEqual(
+            supervision["positive_filter"],
+            "all_direct_axis_approach_points_no_thumb_visible_mask",
+        )
+
+    def test_default_derived_root_tracks_effective_dataset_root(self):
+        root = Path("/tmp/custom-canonical-root")
+        self.assertEqual(
+            negative_generator.resolve_output_root(root, None),
+            root / "derived" / "hgc",
+        )
 
     def test_live_upstream_contract(self):
         result = validator.validate(check_dataset=False)
         self.assertIn("model.py", result["upstream"])
         self.assertIn("model/model_027.pth", result["upstream"])
+
+    def test_v5_matched_pose_depth_fits_current_bin_scope(self):
+        from justin_hgc.bin_pose import DEFAULT_BIN_SPEC
+        from justin_hgc.data import JustinCanonicalDataset
+
+        dataset = JustinCanonicalDataset(
+            split="train", sample_ids=["dense_000137_view000"]
+        )
+        sample = dataset[0]
+        positive = sample["template_graspable"] > 0
+        depths = sample["template_pose"][..., 0][positive]
+        self.assertTrue(torch.any(depths >= 29.0))
+        self.assertLess(float(depths.max()), DEFAULT_BIN_SPEC.depth_scope_cm)
 
     def test_descendant_commit_passes_and_source_mutation_fails(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

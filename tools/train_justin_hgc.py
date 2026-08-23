@@ -27,6 +27,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from justin_hgc.data import DEFAULT_DERIVED_ROOT, DEFAULT_ROOT, JustinCanonicalDataset
+from justin_hgc.bin_pose import BinPoseSpec
 from justin_hgc.model import JustinPointNet2
 from paper_modified_hgc.data import PaperModifiedCanonicalDataset
 from paper_modified_hgc.model import PaperModifiedHGC
@@ -57,6 +58,45 @@ PAPER_MODIFIED_TRAIN_DEFAULTS = {
     "validate_every_epochs": 1,
     "progress_every_batches": 100,
 }
+
+
+def _validate_common_config(config: dict[str, Any]) -> None:
+    """Reject declared fixed contracts that the implementation cannot vary."""
+
+    if config.get("output_contract") != "q_contact_only":
+        raise ValueError("output_contract must be 'q_contact_only'")
+    fixed_sections = {
+        "pose_supervision": {"direct_axis_min_cosine": 0.9999},
+        "hand": {
+            "name": "justin_right_hand_simple",
+            "dof": 12,
+            "template_names": ["finger2", "finger3", "finger4"],
+            "gripper_config": "/home/irsl/datasets/dlr/grippers/justin_hand/justin_right_hand_simple.yaml",
+        },
+        "post_processing": {
+            "top_side_world_up": [0, 0, 1],
+            "nms_distance_m": 0.03,
+            "nms_angle_deg": 30,
+        },
+    }
+    for section, expected in fixed_sections.items():
+        declared = config.get(section)
+        if declared is not None:
+            if not isinstance(declared, dict):
+                raise ValueError(f"{section} must be a mapping")
+            unsupported = set(declared) - set(expected)
+            if unsupported:
+                raise ValueError(
+                    f"{section} has unsupported settings {sorted(unsupported)!r}"
+                )
+            for name, value in expected.items():
+                if declared.get(name) != value:
+                    raise ValueError(
+                        f"{section}.{name} must equal the fixed supported value {value!r}"
+                    )
+    pose_bins = dict(config.get("pose_bins", {}))
+    if float(pose_bins.get("depth_base_cm", 0.0)) != 0.0:
+        raise ValueError("pose_bins.depth_base_cm must be 0 for Justin direct-depth targets")
 
 
 def _validate_paper_config(config: dict[str, Any]) -> None:
@@ -110,6 +150,17 @@ def load_training_config(path: Path = DEFAULT_CONFIG) -> dict[str, Any]:
     training["arm"] = arm
     training["data"] = dict(payload.get("data", {}))
     training["model"] = dict(payload.get("model", {}))
+    for section in (
+        "pose_bins",
+        "pose_supervision",
+        "hand",
+        "post_processing",
+        "output_contract",
+    ):
+        if section in payload:
+            value = payload[section]
+            training[section] = dict(value) if isinstance(value, dict) else value
+    _validate_common_config(training)
     _validate_paper_config(training)
     return training
 
@@ -146,6 +197,8 @@ def save_checkpoint(
     global_step: int,
     config: dict[str, Any],
     metrics: dict[str, float],
+    best_val: float = float("inf"),
+    loader_generator: torch.Generator | None = None,
 ) -> None:
     """Persist model, optimizer, counters, and deterministic RNG state together."""
     model_device = next(model.parameters()).device
@@ -158,6 +211,10 @@ def save_checkpoint(
             "global_step": int(global_step),
             "config": config,
             "metrics": metrics,
+            "best_val": float(best_val),
+            "loader_generator_state": (
+                loader_generator.get_state() if loader_generator is not None else None
+            ),
             "rng": {
                 "python": random.getstate(),
                 "numpy": np.random.get_state(),
@@ -175,10 +232,18 @@ def load_checkpoint(
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
     device: torch.device,
+    expected_config: dict[str, Any] | None = None,
+    loader_generator: torch.Generator | None = None,
 ) -> dict[str, Any]:
     payload = torch.load(path, map_location=device, weights_only=False)
     if payload.get("format") != "issue59_justin_hgc_checkpoint_v1":
         raise ValueError(f"{path}: unsupported checkpoint format")
+    if expected_config is not None:
+        saved_config = payload.get("config")
+        if not isinstance(saved_config, dict):
+            raise ValueError(f"{path}: checkpoint config is missing")
+        if _resume_contract(saved_config) != _resume_contract(expected_config):
+            raise ValueError(f"{path}: checkpoint config does not match the active run contract")
     model.load_state_dict(payload["model"])
     optimizer.load_state_dict(payload["optimizer"])
     rng = payload.get("rng", {})
@@ -188,7 +253,22 @@ def load_checkpoint(
         torch.set_rng_state(rng["torch"].cpu())
         if device.type == "cuda" and rng.get("cuda") is not None:
             torch.cuda.set_rng_state_all([state.cpu() for state in rng["cuda"]])
+    generator_state = payload.get("loader_generator_state")
+    if loader_generator is not None and generator_state is not None:
+        loader_generator.set_state(generator_state.cpu())
     return payload
+
+
+def _resume_contract(config: dict[str, Any]) -> dict[str, Any]:
+    """Return settings that must remain identical across a resumed run."""
+
+    excluded = {
+        "epochs",
+        "checkpoint_every_epochs",
+        "validate_every_epochs",
+        "progress_every_batches",
+    }
+    return {key: value for key, value in config.items() if key not in excluded}
 
 
 def seed_everything(seed: int) -> None:
@@ -234,6 +314,21 @@ def _graspability_counts(
     return true_positive, false_positive, false_negative
 
 
+def _dense_graspability_counts(
+    quality_logits: torch.Tensor, quality_target: torch.Tensor
+) -> tuple[int, int, int]:
+    """Compute dense quality counts for the paper-modified voxel arm."""
+
+    if quality_logits.shape != quality_target.shape:
+        raise ValueError("dense quality logits and target shapes must match")
+    predicted_positive = quality_logits >= 0.0
+    positive = quality_target > 0.5
+    true_positive = int((positive & predicted_positive).sum().item())
+    false_positive = int((~positive & predicted_positive).sum().item())
+    false_negative = int((positive & ~predicted_positive).sum().item())
+    return true_positive, false_positive, false_negative
+
+
 def _f1(true_positive: int, false_positive: int, false_negative: int) -> float:
     denominator = 2 * true_positive + false_positive + false_negative
     return 0.0 if denominator == 0 else 2.0 * true_positive / denominator
@@ -255,6 +350,7 @@ def run_epoch(
     true_positive = 0
     false_positive = 0
     false_negative = 0
+    tilted_excluded_count = 0
     steps = 0
     started = time.monotonic()
     context = torch.enable_grad() if training else torch.no_grad()
@@ -263,17 +359,28 @@ def run_epoch(
             if limit_batches is not None and batch_index >= limit_batches:
                 break
             batch = _to_device(batch, device)
-            if hasattr(model, "forward_batch"):
+            if getattr(model, "paper_modified", False):
                 prediction = model.forward_batch(batch)  # type: ignore[attr-defined]
-            else:
-                prediction = model(
-                    batch["point"], batch["norm_point"].transpose(1, 2).contiguous()
+                counts = _dense_graspability_counts(
+                    prediction.quality_logits, batch["quality_target"]
                 )
-            counts = _graspability_counts(prediction[0], batch["template_graspable"])
-            true_positive += counts[0]
-            false_positive += counts[1]
-            false_negative += counts[2]
-            losses = model.head.loss(prediction, batch)
+                losses = model.head.loss(prediction, batch)
+            else:
+                if hasattr(model, "forward_batch"):
+                    prediction = model.forward_batch(batch)  # type: ignore[attr-defined]
+                else:
+                    prediction = model(
+                        batch["point"], batch["norm_point"].transpose(1, 2).contiguous()
+                    )
+                counts = _graspability_counts(prediction[0], batch["template_graspable"])
+                losses = model.head.loss(prediction, batch)
+            excluded = batch.get("tilted_excluded_count")
+            if excluded is not None:
+                tilted_excluded_count += int(excluded.sum().item())
+            batch_true_positive, batch_false_positive, batch_false_negative = counts
+            true_positive += batch_true_positive
+            false_positive += batch_false_positive
+            false_negative += batch_false_negative
             loss = losses["total_loss"]
             if not torch.isfinite(loss):
                 raise FloatingPointError(f"non-finite total loss at batch {batch_index}: {loss.item()}")
@@ -303,6 +410,10 @@ def run_epoch(
                 )
     metrics = _mean_metrics(rows)
     metrics["graspability_f1"] = _f1(true_positive, false_positive, false_negative)
+    # Both arms record every excluded 10-degree fallback row.  Keep the count
+    # in epoch metrics so provenance can audit the geometry mask without
+    # rereading the immutable source archives.
+    metrics["tilted_excluded_count"] = float(tilted_excluded_count)
     return metrics, steps
 
 
@@ -340,6 +451,15 @@ def write_provenance(
         "val_views": val_count,
         "training_config": config,
     }
+    if config.get("arm") == "paper_modified":
+        provenance["paper_positive_geometry_filter"] = {
+            "approach_axis_cosine_min": 0.9999,
+            "excluded_count_metric": [
+                "train/tilted_excluded_count",
+                "val/tilted_excluded_count",
+            ],
+            "source_immutable": True,
+        }
     (run_dir / "provenance.json").write_text(json.dumps(provenance, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     (run_dir / "config.yaml").write_text(config_path.read_text(encoding="utf-8"), encoding="utf-8")
 
@@ -384,6 +504,7 @@ def build_datasets(
 ) -> tuple[torch.utils.data.Dataset, torch.utils.data.Dataset]:
     """Construct both splits for the selected arm behind one trainer seam."""
 
+    _validate_common_config(config)
     arm = config["arm"]
     data_config = dict(config.get("data", {}))
     if arm == "paper_modified":
@@ -424,7 +545,9 @@ def build_datasets(
 
 
 def build_model(config: dict[str, Any]) -> torch.nn.Module:
-    """Instantiate the encoder selected by config; the head remains shared."""
+    """Instantiate the arm selected by config."""
+
+    _validate_common_config(config)
 
     if config["arm"] == "paper_modified":
         _validate_paper_config(config)
@@ -436,7 +559,25 @@ def build_model(config: dict[str, Any]) -> torch.nn.Module:
             encoder_out_channels=int(model_config.get("out_channels", 128)),
             align_corners=bool(model_config.get("align_corners", True)),
         )
-    return JustinPointNet2()
+    pose_bins = dict(config.get("pose_bins", {}))
+    bin_spec = BinPoseSpec(
+        **{
+            name: float(value)
+            for name, value in pose_bins.items()
+            if name
+            in {
+                "depth_scope_cm",
+                "depth_bin_cm",
+                "azimuth_scope_deg",
+                "azimuth_bin_deg",
+                "elevation_scope_deg",
+                "elevation_bin_deg",
+                "grasp_angle_scope_deg",
+                "grasp_angle_bin_deg",
+            }
+        }
+    )
+    return JustinPointNet2(bin_spec=bin_spec)
 
 
 def build_optimizer(model: torch.nn.Module, config: dict[str, Any]) -> torch.optim.Optimizer:
@@ -480,6 +621,11 @@ def main() -> int:
         derived_root = None
     else:
         derived_root = Path(data_config.get("derived_root", DEFAULT_DERIVED_ROOT))
+    config["data"] = {
+        **data_config,
+        "root": str(dataset_root.resolve()),
+        "derived_root": str(derived_root.resolve()) if derived_root is not None else None,
+    }
     if args.resume is not None:
         run_dir = args.resume.resolve().parent
         prepare_run_dir(run_dir, resume=True)
@@ -531,10 +677,17 @@ def main() -> int:
             val_count=len(val_data),
         )
     else:
-        state = load_checkpoint(args.resume, model=model, optimizer=optimizer, device=device)
+        state = load_checkpoint(
+            args.resume,
+            model=model,
+            optimizer=optimizer,
+            device=device,
+            expected_config=config,
+            loader_generator=generator,
+        )
         start_epoch = int(state["epoch"]) + 1
         global_step = int(state["global_step"])
-        best_val = float(state.get("metrics", {}).get("val/total_loss", best_val))
+        best_val = float(state.get("best_val", best_val))
     metrics_path = run_dir / "metrics.jsonl"
     wandb_run = wandb.init(
         project=args.wandb_project,
@@ -586,13 +739,15 @@ def main() -> int:
             output.write(json.dumps(metrics, sort_keys=True) + "\n")
         print(json.dumps(metrics, sort_keys=True), flush=True)
         checkpoint_metrics = {key: float(value) for key, value in metrics.items() if isinstance(value, (int, float))}
-        if epoch % int(config["checkpoint_every_epochs"]) == 0:
-            save_checkpoint(run_dir / f"epoch-{epoch:03d}.pt", model=model, optimizer=optimizer, epoch=epoch, global_step=global_step, config=config, metrics=checkpoint_metrics)
-        save_checkpoint(run_dir / "last.pt", model=model, optimizer=optimizer, epoch=epoch, global_step=global_step, config=config, metrics=checkpoint_metrics)
         val_loss = metrics.get("val/total_loss")
-        if val_loss is not None and float(val_loss) < best_val:
+        is_best = val_loss is not None and float(val_loss) < best_val
+        if is_best:
             best_val = float(val_loss)
-            save_checkpoint(run_dir / "best.pt", model=model, optimizer=optimizer, epoch=epoch, global_step=global_step, config=config, metrics=checkpoint_metrics)
+        if epoch % int(config["checkpoint_every_epochs"]) == 0:
+            save_checkpoint(run_dir / f"epoch-{epoch:03d}.pt", model=model, optimizer=optimizer, epoch=epoch, global_step=global_step, config=config, metrics=checkpoint_metrics, best_val=best_val, loader_generator=generator)
+        save_checkpoint(run_dir / "last.pt", model=model, optimizer=optimizer, epoch=epoch, global_step=global_step, config=config, metrics=checkpoint_metrics, best_val=best_val, loader_generator=generator)
+        if is_best:
+            save_checkpoint(run_dir / "best.pt", model=model, optimizer=optimizer, epoch=epoch, global_step=global_step, config=config, metrics=checkpoint_metrics, best_val=best_val, loader_generator=generator)
             wandb_run.summary["best/val_total_loss"] = best_val
             wandb_run.summary["best/epoch"] = epoch
     wandb_run.finish()

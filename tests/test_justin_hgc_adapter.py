@@ -21,7 +21,12 @@ from justin_hgc.geometry import (
 )
 from justin_hgc.labels import make_sparse_template_labels
 from justin_hgc.postprocess import aggressive_nms, top_side_mask
-from justin_hgc.bin_pose import DEFAULT_BIN_SPEC, bin_regression_loss, target_range_counts
+from justin_hgc.bin_pose import (
+    DEFAULT_BIN_SPEC,
+    bin_regression_loss,
+    bin_target_to_rotation,
+    target_range_counts,
+)
 from justin_hgc.model import JustinHGCOutputHead
 from justin_hgc.negative_points import select_negative_point_indices
 from justin_hgc.runtime import decode_justin_candidates
@@ -71,6 +76,49 @@ class GeometryTest(unittest.TestCase):
         np.testing.assert_allclose(target[:, 0], [10.0])
         np.testing.assert_allclose(target[:, 2], [0.0])
 
+    def test_pose_target_rotation_round_trip_restores_canonical_palm_frame(self):
+        pose = np.asarray(
+            [[0.10, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0]],
+            dtype=np.float32,
+        )
+        target, _ = pose9d_to_bin_target(
+            pose, np.asarray([[0.0, 0.0, 0.0]], dtype=np.float32)
+        )
+        decoded = bin_target_to_rotation(torch.from_numpy(target)).numpy()
+        expected = np.asarray(
+            [[[0.0, 0.0, -1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]]],
+            dtype=np.float32,
+        )
+        np.testing.assert_allclose(decoded, expected, atol=1.0e-6)
+
+    def test_runtime_pose_decode_restores_palm_position_from_surface_anchor(self):
+        target = np.asarray([10.0, 0.0, 45.0, 90.0], dtype=np.float32)
+        prediction = torch.full(
+            (1, DEFAULT_BIN_SPEC.channels, 1), -10.0, dtype=torch.float32
+        )
+        start = 0
+        for value, (_, scope, size) in zip(target, DEFAULT_BIN_SPEC.group_specs):
+            bins = int(scope / size)
+            index = int(np.floor(value / size))
+            prediction[0, start + index, 0] = 10.0
+            prediction[0, start + bins + index, 0] = float(
+                (value - index * size - size / 2.0) / size
+            )
+            start += 2 * bins
+
+        candidates, _ = decode_justin_candidates(
+            points=torch.zeros((1, 3), dtype=torch.float32),
+            graspable_logits=torch.tensor([[[0.0], [1.0]]], dtype=torch.float32),
+            pose_logits=prediction,
+            q_contact=torch.zeros((1, 12, 1), dtype=torch.float32),
+        )
+        self.assertEqual(len(candidates["palm_pose"]), 1)
+        np.testing.assert_allclose(
+            candidates["palm_pose"][0, :3],
+            [np.sqrt(0.005), 0.0, np.sqrt(0.005)],
+            atol=1.0e-6,
+        )
+
 
 class SparseLabelTest(unittest.TestCase):
     def test_positive_5mm_neighborhoods_and_deterministic_ten_percent_negatives(self):
@@ -83,7 +131,6 @@ class SparseLabelTest(unittest.TestCase):
             palm_pose9d=np.asarray([[0, 0, 0.1, 1, 0, 0, 0, -1, 0]], dtype=np.float32),
             approach_point=np.asarray([[0, 0, 0]], dtype=np.float32),
             q_contact=np.ones((1, 12), dtype=np.float32),
-            q_squeeze=np.full((1, 12), 2.0, dtype=np.float32),
             template_index=np.asarray([1]),
             source_grasp_index=np.asarray([4]),
             num_templates=3,
@@ -95,7 +142,27 @@ class SparseLabelTest(unittest.TestCase):
         self.assertTrue(np.all(labels.graspable[:2, [0, 2]] == -1))
         self.assertEqual(np.count_nonzero(labels.graspable == 0), 0)  # floor(0.1 * 3) == 0
         self.assertEqual(labels.canonical_positive_count, 1)
+        self.assertEqual(labels.pose_eligible_positive_count, 1)
+        self.assertEqual(labels.rejected_tilted_positive_count, 0)
         self.assertEqual(labels.matched_positive_count, 1)
+
+    def test_tilted_dfc_fallback_anchor_is_not_a_pose_positive(self):
+        angle = math.radians(10.0)
+        labels = make_sparse_template_labels(
+            points=np.asarray([[math.sin(angle) * 0.1, 0.0, math.cos(angle) * 0.1]], dtype=np.float32),
+            palm_pose9d=np.asarray([[0, 0, 0, 1, 0, 0, 0, 1, 0]], dtype=np.float32),
+            approach_point=np.asarray([[math.sin(angle) * 0.1, 0.0, math.cos(angle) * 0.1]], dtype=np.float32),
+            q_contact=np.ones((1, 12), dtype=np.float32),
+            template_index=np.asarray([0]),
+            source_grasp_index=np.asarray([0]),
+            num_templates=3,
+            negative_fraction=0.0,
+            key="tilted",
+        )
+        self.assertEqual(labels.canonical_positive_count, 1)
+        self.assertEqual(labels.pose_eligible_positive_count, 0)
+        self.assertEqual(labels.rejected_tilted_positive_count, 1)
+        self.assertFalse(np.any(labels.graspable == 1))
 
     def test_negative_sidecar_selection_excludes_all_geometric_positive_rows(self):
         points = np.arange(60, dtype=np.float32).reshape(20, 3) * 0.01
@@ -127,7 +194,6 @@ class SparseLabelTest(unittest.TestCase):
             palm_pose9d=np.asarray([[0, 0, 0.1, 1, 0, 0, 0, -1, 0]], dtype=np.float32),
             approach_point=np.asarray([[0, 0, 0]], dtype=np.float32),
             q_contact=np.ones((1, 12), dtype=np.float32),
-            q_squeeze=np.ones((1, 12), dtype=np.float32),
             template_index=np.asarray([0]),
             source_grasp_index=np.asarray([1]),
             num_templates=3,
@@ -164,26 +230,26 @@ class PostprocessTest(unittest.TestCase):
 
 
 class HeadAndLossTest(unittest.TestCase):
-    def test_native_justin_head_has_three_templates_and_two_12dof_outputs(self):
+    def test_native_justin_head_has_three_templates_and_one_12dof_output(self):
         head = JustinHGCOutputHead()
-        self.assertEqual(head.channels_per_template, 2 + DEFAULT_BIN_SPEC.channels + 24)
+        self.assertEqual(head.channels_per_template, 2 + DEFAULT_BIN_SPEC.channels + 12)
         head.eval()
         with torch.no_grad():
-            gp, pose, contact, squeeze = head(torch.zeros((2, 128, 5)))
+            gp, pose, contact = head(torch.zeros((2, 128, 5)))
         self.assertEqual(gp.shape, (2, 5, 2, 3))
         self.assertEqual(pose.shape, (2, 5, DEFAULT_BIN_SPEC.channels, 3))
         self.assertEqual(contact.shape, (2, 5, 12, 3))
-        self.assertEqual(squeeze.shape, (2, 5, 12, 3))
 
     def test_pose_bin_loss_is_cpu_safe_and_depth_range_is_explicit(self):
         target = torch.tensor([[28.4019, 0.0, 0.0, 0.0]])
         self.assertEqual(target_range_counts(target)["depth"], 0)
-        self.assertEqual(target_range_counts(torch.tensor([[29.0, 0.0, 0.0, 0.0]]))["depth"], 1)
+        self.assertEqual(target_range_counts(torch.tensor([[29.121178, 0.0, 0.0, 0.0]]))["depth"], 0)
+        self.assertEqual(target_range_counts(torch.tensor([[30.0, 0.0, 0.0, 0.0]]))["depth"], 1)
         loss_dict, loss = bin_regression_loss(torch.zeros((1, DEFAULT_BIN_SPEC.channels)), target)
         self.assertTrue(torch.isfinite(loss))
         self.assertIn("depth_bin_loss", loss_dict)
 
-    def test_decoder_returns_common_runtime_fields_and_static_template_q_open(self):
+    def test_decoder_returns_contact_only_model_runtime_fields(self):
         templates = len(TEMPLATE_NAMES)
         gp = torch.zeros((1, 2, templates))
         gp[:, 1, 0] = 1.0
@@ -193,11 +259,9 @@ class HeadAndLossTest(unittest.TestCase):
             graspable_logits=gp,
             pose_logits=pose,
             q_contact=torch.ones((1, 12, templates)),
-            q_squeeze=torch.full((1, 12, templates), 2.0),
-            template_q_open=torch.arange(36, dtype=torch.float32).reshape(3, 12),
         )
-        self.assertEqual(set(candidates), {"palm_pose", "q_open", "q_contact", "q_squeeze", "quality", "grasp_point", "template_index"})
-        self.assertEqual(candidates["q_open"].shape[1], 12)
+        self.assertEqual(set(candidates), {"palm_pose", "q_contact", "quality", "grasp_point", "template_index"})
+        self.assertEqual(candidates["q_contact"].shape[1], 12)
         self.assertEqual(counts["pre_nms"], counts["post_top_side"])
 
     def test_kmk_template_order_is_the_canonical_grasp_type_order(self):

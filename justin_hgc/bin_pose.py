@@ -1,4 +1,4 @@
-"""Device-agnostic copy of the upstream HGC bin/residual pose objective.
+"""Device-agnostic HGC bin/residual pose objective.
 
 Only the depth interval changes: canonical Justin palms are anchored at a visible
 approach point rather than at the official DLR hand's fixed 20 cm offset.
@@ -16,10 +16,10 @@ import torch.nn.functional as F
 @dataclass(frozen=True)
 class BinPoseSpec:
     # The upstream angular bins are retained verbatim.  The upstream depth target
-    # was (depth_cm - 20) in [0, 8].  A full 8,995-view train scan found a
-    # maximum Justin target of 28.4019 cm, so use the minimum whole-centimetre
-    # scope that contains every observed train target: [0, 29).
-    depth_scope_cm: float = 29.0
+    # was (depth_cm - 20) in [0, 8].  A full view-aligned-v5 direct-axis scan
+    # found a maximum Justin target of 29.121178 cm, so use the minimum whole-
+    # centimetre scope that contains every observed target: [0, 30).
+    depth_scope_cm: float = 30.0
     depth_bin_cm: float = 1.0
     azimuth_scope_deg: float = 360.0
     azimuth_bin_deg: float = 60.0
@@ -60,7 +60,7 @@ def bin_regression_loss(
     target: torch.Tensor,
     spec: BinPoseSpec = DEFAULT_BIN_SPEC,
 ) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
-    """Match upstream CE-bin plus sigmoid-residual SmoothL1 loss on any device."""
+    """Apply the paper's CE-bin plus centered-residual SmoothL1 objective."""
     if prediction.ndim != 2 or prediction.shape[1] != spec.channels:
         raise ValueError(f"expected prediction (N,{spec.channels}), got {tuple(prediction.shape)}")
     if target.shape != (len(prediction), 4):
@@ -75,10 +75,14 @@ def bin_regression_loss(
         start += 2 * bins
         value = target[:, target_index].clamp(0, scope - 1e-4)
         label = torch.floor(value / size).long()
-        residual = (value - label.float() * size) / size
+        residual = (
+            value - (label.float() * size + size / 2.0)
+        ) / size
         one_hot = F.one_hot(label, num_classes=bins).to(dtype=prediction.dtype)
         classification = F.cross_entropy(logits, label)
-        regression = F.smooth_l1_loss((torch.sigmoid(residual_logits) * one_hot).sum(dim=1), residual)
+        regression = F.smooth_l1_loss(
+            (residual_logits * one_hot).sum(dim=1), residual
+        )
         result[f"{name}_bin_loss"] = classification
         result[f"{name}_res_loss"] = regression
         total = total + classification + regression
@@ -91,13 +95,12 @@ def _decode_group(prediction: torch.Tensor, start: int, scope: float, size: floa
     logits = prediction[:, start : start + bins]
     residual_logits = prediction[:, start + bins : start + 2 * bins]
     index = torch.argmax(logits, dim=1)
-    # This deliberately preserves the official decoder's raw-residual behavior.
     residual = residual_logits.gather(1, index[:, None]).squeeze(1) * size
     return index.float() * size + size / 2.0 + residual, start + 2 * bins
 
 
 def decode_pose_bins(prediction: torch.Tensor, spec: BinPoseSpec = DEFAULT_BIN_SPEC) -> torch.Tensor:
-    """Decode four bin/residual fields, retaining the official raw residual decode."""
+    """Decode four fields with the paper's centered residual convention."""
     if prediction.ndim != 2 or prediction.shape[1] != spec.channels:
         raise ValueError(f"expected prediction (N,{spec.channels}), got {tuple(prediction.shape)}")
     values = []
@@ -109,7 +112,7 @@ def decode_pose_bins(prediction: torch.Tensor, spec: BinPoseSpec = DEFAULT_BIN_S
 
 
 def bin_target_to_rotation(target: torch.Tensor) -> torch.Tensor:
-    """Build R=[-cross(axis, closing), closing, surface_to_palm_axis]."""
+    """Restore the canonical palm frame from surface-to-palm and closing axes."""
     _, azimuth_deg, elevation_deg, grasp_angle_deg = target.unbind(dim=-1)
     azimuth = torch.deg2rad(azimuth_deg)
     elevation = torch.deg2rad(elevation_deg)
@@ -124,5 +127,8 @@ def bin_target_to_rotation(target: torch.Tensor) -> torch.Tensor:
     fallback = torch.stack((torch.zeros_like(x), torch.ones_like(x), torch.zeros_like(x)), dim=-1)
     closing = torch.where(singular, fallback - (fallback * axis).sum(dim=-1, keepdim=True) * axis, closing)
     closing = F.normalize(closing, dim=-1)
-    first = -torch.cross(axis, closing, dim=-1)
-    return torch.stack((first, closing, axis), dim=-1)
+    # ``axis`` points from the surface anchor to the palm, while canonical
+    # palm local +z points back toward the surface.  Recovering the palm frame
+    # therefore requires Rz=-axis and Rx=cross(axis, closing).
+    first = torch.cross(axis, closing, dim=-1)
+    return torch.stack((first, closing, -axis), dim=-1)

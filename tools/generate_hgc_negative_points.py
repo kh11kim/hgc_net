@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate scene-matched HGC negative-point sidecars from canonical v4."""
+"""Generate scene-matched HGC negative-point sidecars from a canonical dataset."""
 
 from __future__ import annotations
 
@@ -31,8 +31,15 @@ from justin_hgc.negative_points import NEGATIVE_SEED_SALT, select_negative_point
 
 DEFAULT_ROOT = Path(
     "/home/irsl/datasets/dlr/compiled/"
-    "scdm_justin_right_vgn_train_10000_reconstruction_view_aligned_v4"
+    "scdm_justin_right_vgn_train_10000_reconstruction_view_aligned_v5"
 )
+
+
+def resolve_output_root(root: Path, output_root: Path | None) -> Path:
+    """Resolve the sidecar root relative to the effective dataset root."""
+
+    root = root.resolve()
+    return output_root.resolve() if output_root is not None else root / "derived" / "hgc"
 
 
 def _json_lines(path: Path) -> list[dict[str, Any]]:
@@ -121,8 +128,8 @@ def main() -> int:
     parser.add_argument(
         "--output-root",
         type=Path,
-        required=True,
-        help="Separate derived root; files are written below OUTPUT_ROOT/neg_points.",
+        default=None,
+        help="Dataset-local derived root; files are written below OUTPUT_ROOT/neg_points.",
     )
     parser.add_argument("--point-count", type=int, default=POINT_COUNT)
     parser.add_argument("--negative-fraction", type=float, default=0.10)
@@ -132,9 +139,14 @@ def main() -> int:
     args = parser.parse_args()
 
     root = args.root.resolve()
-    output_root = args.output_root.resolve()
-    if output_root == root or root in output_root.parents:
-        raise ValueError("output-root must be outside the immutable canonical dataset root")
+    output_root = resolve_output_root(root, args.output_root)
+    internal_derived_root = root / "derived"
+    if output_root == root or (
+        root in output_root.parents and internal_derived_root not in output_root.parents
+    ):
+        raise ValueError(
+            "an output inside the canonical dataset must be below its derived/ directory"
+        )
     records = _json_lines(root / "index" / "samples.jsonl")
     if args.limit is not None:
         if args.limit < 0:

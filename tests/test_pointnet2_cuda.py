@@ -48,11 +48,10 @@ class PointNet2CudaTest(unittest.TestCase):
         xyz = torch.randn((1, 1024, 3), device="cuda")
         normalized = xyz.transpose(1, 2).contiguous()
         with torch.no_grad():
-            gp, pose, contact, squeeze = model(xyz, normalized)
+            gp, pose, contact = model(xyz, normalized)
         self.assertEqual(gp.shape, (1, 1024, 2, 3))
         self.assertEqual(pose.shape[0:2], (1, 1024))
         self.assertEqual(contact.shape, (1, 1024, 12, 3))
-        self.assertEqual(squeeze.shape, (1, 1024, 12, 3))
         self.assertTrue(torch.isfinite(gp).all())
 
 

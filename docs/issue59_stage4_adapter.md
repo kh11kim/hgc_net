@@ -15,15 +15,15 @@ layer sizes are copied from official HGC-Net with normalized points enabled.
 
 ## Labels
 
-- Every canonical positive is considered; `thumb_visible_mask` is not used as a
-  supervision filter. Geometric matching alone determines whether its surface
-  anchor is represented in the current depth view.
+- `thumb_visible_mask` is not used as a supervision filter. Positives whose
+  palm local +z / approach direction cosine is below `0.9999` are excluded so
+  the 10-degree fallback-ray grasps never become training labels.
 - Its canonical `approach_point` labels every sampled point within 5 mm.
   Overlaps are resolved by nearest approach point, then source-grasp index.
 - Ten percent of all remaining visible points are deterministic negatives for all
   three templates.  Everything else is ignored, preserving the official sparse
   `{-1, 0, 1}` point-supervision style.
-- The unified-v4 payload has `negative_palm_pose9d` and `negative_q_contact`, but
+- The view-aligned-v5 payload has `negative_palm_pose9d` and `negative_q_contact`, but
   **no negative approach point**.  We therefore do not invent a surface anchor
   for those rows or silently turn them into point labels.
 
@@ -33,33 +33,33 @@ does not allocate an `N x number_of_grasps` distance matrix.
 ## Justin hand boundary and deliberate deltas
 
 `grasp_type_idx` is checked against the KMK YAML insertion order
-`finger2, finger3, finger4`.  Each head predicts native Justin 12-DoF
-`q_contact` and 12-DoF `q_squeeze` in the dataset's physical joint units
-(radians).  There is no 20-to-12 mapper and no joint normalization.  `q_open`
-is read from the static KMK `grasp_templates.<name>.q_open` row during runtime
-decode; it is not a model output.
+`finger2, finger3, finger4`. Each head predicts native Justin 12-DoF
+`q_contact` in physical joint units (radians). There is no 20-to-12 mapper and
+no joint normalization. The server emits neither `q_open` nor `q_squeeze`;
+the grasp-sim client derives both from `q_contact` through
+`JustinContactWaypointMapper` and its Jacobian/FK seam.
 
 The official HGC depth target is DLR-specific: `(depth_cm - 20)` in an 8 cm
 range. It cannot represent canonical Justin palms. The adapter therefore
 retains the exact bin-plus-residual representation and all angular bins, but
-uses direct approach-point-to-palm depth in centimetres. A whole unified-v4
-audit over all canonical positives found a maximum distance of `0.2861356 m`
-and no target at or above 29 cm, so `[0, 29)` contains the v4 targets.
+uses direct approach-point-to-palm depth in centimetres. A whole canonical
+view-aligned-v5 audit over all direct-axis positives found a maximum distance
+of `0.29121178 m`, so `[0, 30)` contains the audited targets.
 The loss reports and rejects any positive label outside this range before its
 internal upstream-compatible clamp could hide it.
 
 ## Runtime filters
 
 `decode_justin_candidates()` returns `palm_pose`, `grasp_point`,
-`template_index`, `quality`, `q_open`, `q_contact`, and `q_squeeze`.
+`template_index`, `quality`, and `q_contact`.
 
 1. It keeps only palms whose `palm_position - grasp_point` has positive dot
    product with explicit reconstruction-grid world-up `(0,0,1)`.
 2. It applies upstream's aggressive NMS exactly: a lower-score candidate survives
    only if it is **both** farther than 3 cm **and** farther than 30 degrees from
    every kept candidate.
-3. It returns `pre_top_side`, `post_top_side`, `pre_nms`, and `post_nms` counts
-   for evaluation logging.
+3. The server may return internal counts for validation, but the evaluator does
+   not persist NMS diagnostics as experiment metrics.
 
 The geometry fixture verifies that canonical local +z points from palm to the
 approach point, so the surface-anchor representation uses `-R[:,2]` to point
@@ -77,8 +77,9 @@ uv run python -m unittest tests/test_justin_hgc_adapter.py -v
 uv run python tools/validate_issue59_contract.py
 ```
 
-Before a GPU smoke, first inspect `/home/irsl/ws/dlr/GPU_new.md` and verify the
-live device state. Build the local
+Before a GPU smoke, follow the workspace
+[GPU policy](../../docs/ENTRYPOINT.md#gpu-작업-원칙) and verify that the selected
+GPU 2/3 MIG UUID is free. Build the local
 extension for the installed CUDA toolkit and then use the allocated device:
 
 ```bash
@@ -110,14 +111,15 @@ memory on a 23.63 GiB MIG slice; batch 40 was a capacity-only ceiling at 18.14
 GiB and is not the production setting.
 
 The canonical index's scene split is used without resampling or leakage:
-8,995 train views, 510 validation views, and 495 test views.  A new run always
+9,505 train views and 495 validation views; evaluation uses a separate dataset.
+A new run always
 creates a UTC-timestamped directory under `runs/issue59/`; an existing directory
 is an error.  Every epoch writes `last.pt` and an epoch checkpoint, validation
 selects `best.pt`, and each checkpoint includes model, Adam state, counters,
 metrics, and RNG states.  `provenance.json` pins command, commit, worktree
 status, dataset root/counts, Torch/CUDA/device details, and the copied config.
 
-After allocating a GPU explicitly recorded in `GPU_new.md`, the smoke and resume
+After selecting a free GPU 2/3 MIG UUID under that policy, the smoke and resume
 commands are:
 
 ```bash

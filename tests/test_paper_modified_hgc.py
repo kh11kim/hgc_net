@@ -16,6 +16,14 @@ import torch
 from paper_modified_hgc.data import PaperModifiedCanonicalDataset, _grid_point_to_index
 from paper_modified_hgc.encoder import ConvBlock3D, ThreeDFPNEncoder
 from paper_modified_hgc.model import PaperModifiedHGC
+from paper_modified_hgc.pose import (
+    ORIENTATION_BINS,
+    bin_and_residual_to_mat,
+    mat_to_bin_and_residual,
+    pose9d_to_targets,
+    targets_to_pose9d,
+)
+from paper_modified_hgc.runtime import decode_paper_candidates
 
 
 TRAIN_PATH = Path(__file__).resolve().parents[1] / "tools" / "train_justin_hgc.py"
@@ -126,12 +134,14 @@ class PaperModifiedDataTest(unittest.TestCase):
             self.assertEqual(tuple(item["template_graspable"].shape), (3, 3))
             self.assertEqual(int(item["positive_feature_count"]), 2)
             self.assertEqual(int(item["negative_feature_count"]), 1)
+            self.assertEqual(int(item["tilted_excluded_count"]), 0)
             positive = item["positive_feature_indices"].tolist()
             negative = item["negative_feature_indices"].tolist()
             self.assertTrue(set(map(tuple, positive)).isdisjoint(map(tuple, negative)))
             self.assertTrue(torch.all(item["template_graspable"][2] == 0))
             self.assertEqual(int((item["template_graspable"] == 1).sum()), 2)
             self.assertEqual(tuple(item["template_q_open"].shape), (3, 3, 12))
+            self.assertNotIn("template_q_squeeze", item)
             repeated = dataset[0]
             for key in ("feature_indices", "template_graspable", "template_pose"):
                 self.assertTrue(torch.equal(item[key], repeated[key]))
@@ -153,6 +163,37 @@ class PaperModifiedDataTest(unittest.TestCase):
             self.assertTrue(negative.isdisjoint(all_positive))
             self.assertTrue(torch.all(item["template_graspable"][2:, :] == 0))
 
+    def test_tilted_approach_ray_is_excluded_from_scalar_depth_supervision(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root, gripper = _fixture_root(Path(temporary), canonical_count=4)
+            grasp_path = root / "grasp" / "sample.npz"
+            with np.load(grasp_path, allow_pickle=False) as payload:
+                arrays = {key: payload[key] for key in payload.files}
+            arrays["approach_point"] = arrays["approach_point"].copy()
+            # With a 0.1m palm-to-anchor depth this is the canonical 10-degree
+            # fallback ray (cosine ~= 0.984808), not a direct palm-z target.
+            arrays["approach_point"][0] += np.asarray(
+                (0.1 * np.tan(np.deg2rad(10.0)), 0.0, 0.0), dtype=np.float32
+            )
+            # The source archive may still carry a legacy q_squeeze array;
+            # paper-modified loading must ignore it completely.
+            arrays["q_squeeze"] = np.asarray([123.0], dtype=np.float32)
+            np.savez_compressed(grasp_path, **arrays)
+            dataset = PaperModifiedCanonicalDataset(
+                root, split="train", num_grasps=3, gripper_config=gripper
+            )
+            item = dataset[0]
+            self.assertEqual(int(item["canonical_positive_count"]), 3)
+            self.assertEqual(int(item["all_positive_feature_count"]), 3)
+            self.assertEqual(int(item["tilted_excluded_count"]), 1)
+            expected_indices = set(
+                map(tuple, _grid_point_to_index(arrays["approach_point"][1:]).tolist())
+            )
+            self.assertEqual(
+                set(map(tuple, item["all_positive_feature_indices"].tolist())),
+                expected_indices,
+            )
+
 
 class PaperModifiedModelTest(unittest.TestCase):
     def test_tiny_fpn_forward_loss_backward_and_strict_checkpoint(self) -> None:
@@ -170,12 +211,10 @@ class PaperModifiedModelTest(unittest.TestCase):
             prediction = model.forward_batch(batch)
             losses = model.head.loss(prediction, batch)
             self.assertTrue(torch.isfinite(losses["total_loss"]))
-            counts = train._graspability_counts(
-                torch.zeros_like(prediction[0]), batch["template_graspable"]
+            counts = train._dense_graspability_counts(
+                torch.zeros_like(prediction.quality_logits), batch["quality_target"]
             )
-            self.assertGreater(counts[2], 0)  # class-1 rows are supervised
-            self.assertEqual(counts[1], 0)  # zero logits predict class 0
-            losses["total_loss"].backward()
+            self.assertGreater(counts[1], 0)  # zero logits predict quality-positive everywhere
             optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-6)
             with tempfile.TemporaryDirectory() as checkpoint_dir:
                 checkpoint = Path(checkpoint_dir) / "last.pt"
@@ -278,6 +317,10 @@ class SharedTrainerDispatchTest(unittest.TestCase):
             )
             payload = json.loads((run_dir / "provenance.json").read_text(encoding="utf-8"))
             self.assertIsNone(payload["derived_root"])
+            self.assertEqual(
+                payload["paper_positive_geometry_filter"]["approach_axis_cosine_min"],
+                0.9999,
+            )
 
 
 class ThreeDFPNArchitectureTest(unittest.TestCase):
@@ -295,6 +338,98 @@ class ThreeDFPNArchitectureTest(unittest.TestCase):
         self.assertEqual(block.down.stride, (1, 1, 1))
         output = block(torch.zeros((1, 2, 16, 16, 16)))
         self.assertEqual(tuple(output.shape[-3:]), (8, 8, 8))
+
+
+class PaperModifiedHeadSemanticsTest(unittest.TestCase):
+    def test_reference_head_shapes_and_q_contact_only(self) -> None:
+        model = PaperModifiedHGC(
+            encoder_channels=(4, 4, 4, 4),
+            encoder_scales=(2, 2, 2, 2),
+            encoder_out_channels=8,
+        )
+        self.assertEqual(model.head.grasp_bin_pred_head.layers[-1].out_features, ORIENTATION_BINS)
+        self.assertEqual(model.head.grasp_reg_head.layers[-1].out_features, 4)
+        self.assertEqual(model.head.q_contact_head.layers[-1].out_features, 12)
+        self.assertFalse(hasattr(model.head, "q_squeeze_head"))
+        self.assertFalse(hasattr(model.head, "q_finger_head"))
+        input_grid = torch.zeros((1, 2, 8, 8, 8))
+        feature_indices = torch.tensor([[[3, 3, 3], [5, 5, 5]]])
+        prediction = model.forward_batch(
+            {"input_grid": input_grid, "feature_indices": feature_indices}
+        )
+        self.assertEqual(tuple(prediction.quality_logits.shape), (1, 1, 8, 8, 8))
+        self.assertEqual(tuple(prediction.orientation_logits.shape), (1, 2, ORIENTATION_BINS))
+        self.assertEqual(tuple(prediction.residual.shape), (1, 2, 4))
+        self.assertEqual(tuple(prediction.q_contact.shape), (1, 2, 12))
+
+    def test_dense_focal_loss_changes_when_positive_voxel_logit_changes(self) -> None:
+        model = PaperModifiedHGC(
+            encoder_channels=(2, 2, 2, 2),
+            encoder_scales=(2, 2, 2, 2),
+            encoder_out_channels=4,
+        )
+        batch = {
+            "quality_target": torch.zeros((1, 1, 4, 4, 4)),
+            "positive_mask": torch.tensor([[True]]),
+            "orientation_bin": torch.tensor([[0]]),
+            "pose_target": torch.zeros((1, 1, 4)),
+            "q_contact": torch.zeros((1, 1, 12)),
+        }
+        batch["quality_target"][0, 0, 1, 1, 1] = 1.0
+        quality_low = torch.zeros((1, 1, 4, 4, 4), requires_grad=True)
+        quality_high = quality_low.detach().clone()
+        quality_high[0, 0, 1, 1, 1] = 4.0
+        orientation = torch.zeros((1, 1, ORIENTATION_BINS))
+        residual = torch.zeros((1, 1, 4))
+        contact = torch.zeros((1, 1, 12))
+        low = model.head.loss((quality_low, orientation, residual, contact), batch)
+        high = model.head.loss((quality_high, orientation, residual, contact), batch)
+        self.assertLess(high["seg_loss"], low["seg_loss"])
+        self.assertTrue(torch.isfinite(high["total_loss"]))
+
+    def test_pose_bin_residual_roundtrip_for_valid_anchor_geometry(self) -> None:
+        # The paper codec assumes the approach point lies on the palm local-z
+        # ray, as in the canonical Justin target construction.
+        anchor = torch.tensor([[0.1, -0.05, 0.0]], dtype=torch.float32)
+        source_bin = torch.tensor([400], dtype=torch.long)
+        source_residual = torch.tensor([[0.25, 0.1, -0.08, 0.07]], dtype=torch.float32)
+        palm = targets_to_pose9d(source_bin, source_residual, anchor)
+        bins, residual = pose9d_to_targets(palm, anchor)
+        restored = targets_to_pose9d(bins, residual, anchor)
+        torch.testing.assert_close(restored, palm, atol=2e-5, rtol=0.0)
+        rotation = bin_and_residual_to_mat(bins, residual[:, 1:])
+        decoded_bins, decoded_residual = mat_to_bin_and_residual(rotation)
+        torch.testing.assert_close(decoded_bins, bins)
+        torch.testing.assert_close(decoded_residual, residual[:, 1:], atol=2e-5, rtol=0.0)
+
+    def test_runtime_returns_contact_only_without_waypoint_mapper(self) -> None:
+        count = 100
+        points = torch.zeros((count, 3), dtype=torch.float32)
+        points[:, 0] = torch.arange(count) * 0.001
+        indices = torch.zeros((count, 3), dtype=torch.long)
+        indices[:, 2] = torch.arange(count) % 64
+        quality = torch.zeros((1, 1, 64, 64, 64))
+        quality[0, 0, indices[:, 0], indices[:, 1], indices[:, 2]] = torch.arange(count, dtype=quality.dtype)
+        orientation = torch.zeros((1, count, ORIENTATION_BINS))
+        residual = torch.zeros((1, count, 4))
+        residual[..., 0] = 0.05
+        contact = torch.zeros((1, count, 12))
+        candidates, diagnostics = decode_paper_candidates(
+            points=points,
+            feature_indices=indices,
+            quality_logits=quality,
+            orientation_logits=orientation,
+            residual=residual,
+            q_contact=contact,
+            topk=count,
+            num_samples=count,
+            minimum_candidates=count,
+        )
+        self.assertEqual(candidates["q_contact"].shape, (count, 12))
+        self.assertNotIn("q_open", candidates)
+        self.assertNotIn("q_squeeze", candidates)
+        self.assertTrue(np.all(candidates["quality"][:-1] >= candidates["quality"][1:]))
+        self.assertEqual(diagnostics["post_backfill"], count)
 
 
 if __name__ == "__main__":

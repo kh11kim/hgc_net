@@ -2,9 +2,9 @@
 
 The block topology follows the pinned ``scdm_final@a344dcf`` reference, but
 the implementation is local to HGC-Net and has no runtime dependency on that
-checkout.  It deliberately stops at a 128D voxel feature grid; the Justin
-template head and objective live in ``justin_hgc.model`` and are shared with
-the PointNet++ arm.
+checkout.  It deliberately stops at a 128D voxel feature grid; the
+paper-modified dense quality/orientation/contact heads are defined in the
+local ``paper_modified_hgc.model`` module.
 """
 
 from __future__ import annotations

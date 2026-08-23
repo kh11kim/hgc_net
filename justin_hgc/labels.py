@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .geometry import pose9d_to_bin_target, stable_seed
+from .geometry import palm_axis_aligned_mask, pose9d_to_bin_target, stable_seed
 
 
 @dataclass(frozen=True)
@@ -16,8 +16,9 @@ class SparseTemplateLabels:
     graspable: np.ndarray  # (N, templates), int64
     pose: np.ndarray  # (N, templates, 4), float32
     q_contact: np.ndarray  # (N, templates, 12), float32
-    q_squeeze: np.ndarray  # (N, templates, 12), float32
     canonical_positive_count: int
+    pose_eligible_positive_count: int
+    rejected_tilted_positive_count: int
     matched_positive_count: int  # canonical approach anchors with a 5 mm surface match
 
 
@@ -27,7 +28,6 @@ def make_sparse_template_labels(
     palm_pose9d: np.ndarray,
     approach_point: np.ndarray,
     q_contact: np.ndarray,
-    q_squeeze: np.ndarray,
     template_index: np.ndarray,
     source_grasp_index: np.ndarray,
     num_templates: int,
@@ -47,25 +47,32 @@ def make_sparse_template_labels(
     palm_pose9d = np.asarray(palm_pose9d, dtype=np.float32)
     approach_point = np.asarray(approach_point, dtype=np.float32)
     q_contact = np.asarray(q_contact, dtype=np.float32)
-    q_squeeze = np.asarray(q_squeeze, dtype=np.float32)
     template_index = np.asarray(template_index, dtype=np.int64)
     source_grasp_index = np.asarray(source_grasp_index, dtype=np.int64)
     n = len(points)
     if points.shape != (n, 3):
         raise ValueError(f"points must be Nx3, got {points.shape}")
-    if not (len(palm_pose9d) == len(approach_point) == len(q_contact) == len(q_squeeze) == len(template_index) == len(source_grasp_index)):
+    if not (len(palm_pose9d) == len(approach_point) == len(q_contact) == len(template_index) == len(source_grasp_index)):
         raise ValueError("positive canonical grasp arrays must have the same length")
-    if q_contact.shape[-1:] != (12,) or q_squeeze.shape != q_contact.shape:
-        raise ValueError("Justin joint targets must be matching Nx12 arrays")
+    if q_contact.shape[-1:] != (12,):
+        raise ValueError("Justin q_contact targets must be Nx12")
     if np.any((template_index < 0) | (template_index >= num_templates)):
         raise ValueError("grasp_type_idx is outside the Justin template set")
     if not 0.0 <= negative_fraction <= 1.0:
         raise ValueError("negative_fraction must be in [0, 1]")
 
+    canonical_positive_count = len(approach_point)
+    pose_eligible = palm_axis_aligned_mask(palm_pose9d, approach_point)
+    rejected_tilted_positive_count = int((~pose_eligible).sum())
+    palm_pose9d = palm_pose9d[pose_eligible]
+    approach_point = approach_point[pose_eligible]
+    q_contact = q_contact[pose_eligible]
+    template_index = template_index[pose_eligible]
+    source_grasp_index = source_grasp_index[pose_eligible]
+
     labels = np.full((n, num_templates), -1, dtype=np.int64)
     pose = np.zeros((n, num_templates, 4), dtype=np.float32)
     contact = np.zeros((n, num_templates, 12), dtype=np.float32)
-    squeeze = np.zeros((n, num_templates, 12), dtype=np.float32)
     matched_grasps = np.zeros(len(approach_point), dtype=bool)
     if len(approach_point):
         pose_target, _ = pose9d_to_bin_target(palm_pose9d, approach_point)
@@ -88,7 +95,6 @@ def make_sparse_template_labels(
             labels[better, template] = 1
             pose[better, template] = pose_target[grasp_idx]
             contact[better, template] = q_contact[grasp_idx]
-            squeeze[better, template] = q_squeeze[grasp_idx]
             best_distance[better, template] = distance[better]
             best_source[better, template] = source_grasp_index[grasp_idx]
 
@@ -118,7 +124,8 @@ def make_sparse_template_labels(
         graspable=labels,
         pose=pose,
         q_contact=contact,
-        q_squeeze=squeeze,
-        canonical_positive_count=len(approach_point),
+        canonical_positive_count=canonical_positive_count,
+        pose_eligible_positive_count=len(approach_point),
+        rejected_tilted_positive_count=rejected_tilted_positive_count,
         matched_positive_count=matched_positive_count,
     )

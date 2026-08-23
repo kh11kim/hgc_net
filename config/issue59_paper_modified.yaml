@@ -1,13 +1,16 @@
 # Issue #59 paper-modified Justin-right HGC arm.
-# The shared trainer selects only the data representation and encoder from arm.
+# The shared trainer selects the independent paper-modified voxel arm from arm.
 arm: paper_modified
+output_contract: q_contact_only
+pose_supervision:
+  direct_axis_min_cosine: 0.9999
 data:
-  root: /home/irsl/datasets/dlr/compiled/scdm_justin_right_vgn_train_10000_reconstruction_view_aligned_v4
+  root: /home/irsl/datasets/dlr/compiled/scdm_justin_right_vgn_train_10000_reconstruction_view_aligned_v5
   grid_size: 64
   grid_edge_m: 0.5
   num_grasps: 100
   # GT object voxels sampled outside all positive approach anchors provide
-  # class-0 supervision to the shared Justin graspability head.
+  # class-0 supervision to the paper-modified dense quality head.
   negative_voxel_count: 100
   split_seed: 0
   gripper_config: /home/irsl/datasets/dlr/grippers/justin_hand/justin_right_hand_simple.yaml
@@ -19,6 +22,9 @@ model:
   scales: [2, 2, 2, 4]
   out_channels: 128
   align_corners: true
+  head: paper_modified_dense_quality_orientation_contact
+# Runtime returns palm pose, quality, and learned q_contact.  The grasp-sim
+# JustinContactWaypointMapper derives execution q_open/q_squeeze waypoints.
 training:
   epochs: 80
   batch_size: 1

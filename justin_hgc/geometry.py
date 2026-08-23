@@ -80,6 +80,37 @@ def deterministic_fixed_sample(points: np.ndarray, *, count: int = POINT_COUNT, 
     return points[indices], indices.astype(np.int64, copy=False)
 
 
+def deterministic_seed_sample(
+    points: np.ndarray, *, count: int = POINT_COUNT, seed: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """Sample exactly ``count`` existing points using an evaluation seed.
+
+    This is the runtime counterpart of :func:`deterministic_fixed_sample`.
+    Every returned row is an existing cropped point; when a view has fewer
+    than ``count`` points, deterministic replacement repeats real rows rather
+    than fabricating geometry.  The explicit integer seed is part of the
+    evaluation request and is intentionally not derived from a sample ID.
+    """
+
+    points = np.asarray(points, dtype=np.float32)
+    if points.ndim != 2 or points.shape[1] != 3:
+        raise ValueError(f"points must be Nx3, got {points.shape}")
+    if len(points) == 0:
+        raise ValueError("no valid depth points remain in the centred 0.5 m grid")
+    if int(seed) != seed or int(seed) < 0:
+        raise ValueError(f"seed must be a non-negative integer, got {seed!r}")
+    if int(count) <= 0:
+        raise ValueError(f"count must be positive, got {count}")
+    rng = np.random.default_rng(int(seed))
+    if len(points) >= int(count):
+        indices = rng.choice(len(points), size=int(count), replace=False)
+    else:
+        repeated = rng.choice(len(points), size=int(count) - len(points), replace=True)
+        indices = np.concatenate((np.arange(len(points), dtype=np.int64), repeated))
+    indices = np.asarray(indices, dtype=np.int64)
+    return np.ascontiguousarray(points[indices]), indices
+
+
 def pose9d_to_matrix(pose9d: np.ndarray) -> np.ndarray:
     """Convert canonical pose9d (translation + first two rotation columns)."""
     pose9d = np.asarray(pose9d, dtype=np.float32)
@@ -120,3 +151,29 @@ def pose9d_to_bin_target(palm_pose9d: np.ndarray, approach_point: np.ndarray) ->
     closing = rotation[..., :, 1]
     grasp_angle = np.degrees(np.arctan2(closing[..., 1], closing[..., 0])) % 360.0
     return np.stack((depth_cm, azimuth, elevation, grasp_angle), axis=-1).astype(np.float32), surface_to_palm.astype(np.float32)
+
+
+def palm_axis_aligned_mask(
+    palm_pose9d: np.ndarray,
+    approach_point: np.ndarray,
+    *,
+    minimum_cosine: float = 0.9999,
+) -> np.ndarray:
+    """Select anchors representable by HGC's scalar approach-depth pose.
+
+    DFC may fall back to a ray tilted by exactly 10 degrees when the direct
+    palm-z ray misses the object.  HGC predicts only one depth scalar, so those
+    tilted anchors cannot reconstruct the labelled palm translation and must
+    not become contradictory positive pose labels.
+    """
+    palm_pose9d = np.asarray(palm_pose9d, dtype=np.float32)
+    approach_point = np.asarray(approach_point, dtype=np.float32)
+    if palm_pose9d.shape != (*approach_point.shape[:-1], 9):
+        raise ValueError("palm_pose9d and approach_point must have matching Nx9/Nx3 shapes")
+    offset = approach_point - palm_pose9d[..., :3]
+    length = np.linalg.norm(offset, axis=-1)
+    if np.any(length <= 1.0e-8):
+        raise ValueError("approach point must differ from the palm translation")
+    palm_z = pose9d_to_matrix(palm_pose9d)[..., :, 2]
+    cosine = np.sum(offset * palm_z, axis=-1) / length
+    return cosine >= float(minimum_cosine)

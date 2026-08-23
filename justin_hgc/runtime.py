@@ -10,6 +10,58 @@ from .bin_pose import DEFAULT_BIN_SPEC, BinPoseSpec, bin_target_to_rotation, dec
 from .postprocess import aggressive_nms, top_side_mask
 
 
+def _farthest_point_backfill(
+    *,
+    positions: np.ndarray,
+    quality: np.ndarray,
+    kept: np.ndarray,
+    minimum_candidates: int,
+) -> np.ndarray:
+    """Append suppressed candidates by deterministic palm-position FPS.
+
+    ``positions`` are already in the canonical runtime frame and in metres.  The
+    NMS indices remain in their original order; only candidates not in that set
+    are considered for backfill.  Lexicographic selection makes ties explicit:
+    greater distance, then greater quality, then lower original index.
+    """
+    positions = np.asarray(positions, dtype=np.float32)
+    quality = np.asarray(quality, dtype=np.float32)
+    selected = np.asarray(kept, dtype=np.int64).copy()
+    if len(selected) >= minimum_candidates or len(positions) < minimum_candidates:
+        return selected
+
+    selected_set = {int(index) for index in selected}
+    remaining = np.asarray(
+        [index for index in range(len(positions)) if index not in selected_set],
+        dtype=np.int64,
+    )
+    if len(selected):
+        minimum_distances = np.linalg.norm(
+            positions[remaining, None, :] - positions[selected][None, :, :],
+            axis=2,
+        ).min(axis=1)
+    else:
+        # Aggressive NMS keeps one candidate for every non-empty pool.  This
+        # fallback keeps the helper total for defensive callers that supply
+        # an empty NMS result by applying the remaining tie-break rules.
+        minimum_distances = np.full(len(remaining), np.inf, dtype=np.float32)
+    while len(selected) < minimum_candidates and len(remaining):
+        order = np.lexsort(
+            (remaining, -quality[remaining], -minimum_distances)
+        )
+        best_position = int(order[0])
+        best_index = int(remaining[best_position])
+        selected = np.append(selected, best_index)
+        remaining = np.delete(remaining, best_position)
+        minimum_distances = np.delete(minimum_distances, best_position)
+        if len(remaining):
+            distance_to_best = np.linalg.norm(
+                positions[remaining] - positions[best_index], axis=1
+            )
+            minimum_distances = np.minimum(minimum_distances, distance_to_best)
+    return selected
+
+
 @torch.no_grad()
 def decode_justin_candidates(
     *,
@@ -17,15 +69,15 @@ def decode_justin_candidates(
     graspable_logits: torch.Tensor,
     pose_logits: torch.Tensor,
     q_contact: torch.Tensor,
-    q_squeeze: torch.Tensor,
-    template_q_open: torch.Tensor,
     bin_spec: BinPoseSpec = DEFAULT_BIN_SPEC,
+    minimum_candidates: int | None = None,
 ) -> tuple[dict[str, np.ndarray], dict[str, int]]:
-    """Produce ``palm_pose/q_open/q_contact/q_squeeze/quality`` candidates.
+    """Produce palm pose, q_contact and quality candidates.
 
-    The q_open rows are selected from static KMK template data, never predicted.
+    Execution q_open/q_squeeze waypoints are derived from q_contact by the
+    grasp-simulator's Justin kinematics mapper, not by this model runtime.
     Counts include every candidate before filtering and after top-side plus the
-    exact upstream aggressive NMS so evaluation logs can expose both reductions.
+    exact upstream aggressive NMS so the server can validate post-processing.
     """
     if points.ndim != 2 or points.shape[1] != 3:
         raise ValueError("points must be Nx3")
@@ -34,10 +86,8 @@ def decode_justin_candidates(
         raise ValueError("graspable_logits must be Nx2xT")
     if pose_logits.shape != (len(points), bin_spec.channels, templates):
         raise ValueError("pose_logits must be NxCxT")
-    if q_contact.shape != (len(points), 12, templates) or q_squeeze.shape != q_contact.shape:
-        raise ValueError("Justin q_contact/q_squeeze must be Nx12xT")
-    if template_q_open.shape != (templates, 12):
-        raise ValueError("template_q_open must be Tx12")
+    if q_contact.shape != (len(points), 12, templates):
+        raise ValueError("Justin q_contact must be Nx12xT")
     all_items: list[dict[str, torch.Tensor]] = []
     for template in range(templates):
         probability = F.softmax(graspable_logits[:, :, template], dim=1)[:, 1]
@@ -47,14 +97,14 @@ def decode_justin_candidates(
         target = decode_pose_bins(pose_logits[:, :, template][selected], bin_spec)
         rotation = bin_target_to_rotation(target)
         anchor = points[selected]
-        palm_position = anchor + rotation[:, :, 2] * (target[:, 0:1] / 100.0)
+        # Canonical palm local +z points from palm back to the surface anchor.
+        # Move from that anchor in -Rz to recover the palm translation.
+        palm_position = anchor - rotation[:, :, 2] * (target[:, 0:1] / 100.0)
         all_items.append(
             {
                 "palm_position": palm_position,
                 "rotation": rotation,
                 "q_contact": q_contact[:, :, template][selected],
-                "q_squeeze": q_squeeze[:, :, template][selected],
-                "q_open": template_q_open[template].expand(int(selected.sum()), -1),
                 "quality": probability[selected],
                 "grasp_point": anchor,
                 "template_index": torch.full((int(selected.sum()),), template, device=points.device, dtype=torch.long),
@@ -64,9 +114,7 @@ def decode_justin_candidates(
         empty = np.empty((0,), dtype=np.float32)
         return {
             "palm_pose": np.empty((0, 9), dtype=np.float32),
-            "q_open": np.empty((0, 12), dtype=np.float32),
             "q_contact": np.empty((0, 12), dtype=np.float32),
-            "q_squeeze": np.empty((0, 12), dtype=np.float32),
             "quality": empty,
             "grasp_point": np.empty((0, 3), dtype=np.float32),
             "template_index": np.empty((0,), dtype=np.int64),
@@ -80,6 +128,18 @@ def decode_justin_candidates(
     kept, nms_counts = aggressive_nms(
         positions=numpy["palm_position"], rotations=numpy["rotation"], scores=numpy["quality"]
     )
+    nms_kept = len(kept)
+    if minimum_candidates is not None:
+        minimum = int(minimum_candidates)
+        if minimum < 1:
+            raise ValueError("minimum_candidates must be positive")
+        if nms_kept < minimum <= len(numpy["quality"]):
+            kept = _farthest_point_backfill(
+                positions=numpy["palm_position"],
+                quality=numpy["quality"],
+                kept=kept,
+                minimum_candidates=minimum,
+            )
     for key in numpy:
         numpy[key] = numpy[key][kept]
     rotation = numpy.pop("rotation")
@@ -88,10 +148,14 @@ def decode_justin_candidates(
     ).astype(np.float32)
     return {
         "palm_pose": palm_pose,
-        "q_open": numpy["q_open"].astype(np.float32),
         "q_contact": numpy["q_contact"].astype(np.float32),
-        "q_squeeze": numpy["q_squeeze"].astype(np.float32),
         "quality": numpy["quality"].astype(np.float32),
         "grasp_point": numpy["grasp_point"].astype(np.float32),
         "template_index": numpy["template_index"].astype(np.int64),
-    }, {"pre_top_side": pre_top_side, "post_top_side": int(top_mask.sum()), **nms_counts}
+    }, {
+        "pre_top_side": pre_top_side,
+        "post_top_side": int(top_mask.sum()),
+        **nms_counts,
+        "nms_backfill": int(len(kept) - nms_kept),
+        "post_backfill": int(len(kept)),
+    }

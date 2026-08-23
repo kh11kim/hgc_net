@@ -1,7 +1,10 @@
 # Issue #59 native Justin-right HGC adapter.  This does not mutate upstream config.
+output_contract: q_contact_only
+pose_supervision:
+  direct_axis_min_cosine: 0.9999
 data:
-  root: /home/irsl/datasets/dlr/compiled/scdm_justin_right_vgn_train_10000_reconstruction_view_aligned_v4
-  derived_root: /home/irsl/datasets/dlr/derived/hgc_derived
+  root: /home/irsl/datasets/dlr/compiled/scdm_justin_right_vgn_train_10000_reconstruction_view_aligned_v5
+  derived_root: /home/irsl/datasets/dlr/compiled/scdm_justin_right_vgn_train_10000_reconstruction_view_aligned_v5/derived/hgc
   split_seed: 0
   point_count: 25000
   centered_grid_edge_m: 0.5
@@ -17,7 +20,7 @@ pose_bins:
   # Direct palm-to-approach distance. The official HGC 20cm base is DLR-hand
   # specific and is not used for Justin.
   depth_base_cm: 0
-  depth_scope_cm: 29
+  depth_scope_cm: 30
   depth_bin_cm: 1
   azimuth_scope_deg: 360
   azimuth_bin_deg: 60

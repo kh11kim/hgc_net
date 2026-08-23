@@ -19,7 +19,7 @@ from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_MANIFEST = REPO_ROOT / "contract" / "issue59_upstream_canonical_v4.json"
+DEFAULT_MANIFEST = REPO_ROOT / "contract" / "issue59_upstream_canonical_v5.json"
 
 
 class ContractError(RuntimeError):
@@ -160,7 +160,14 @@ def validate_dataset(dataset_root: Path, contract: dict[str, Any]) -> list[str]:
         splits = json.load(source)
     if not isinstance(splits, dict):
         raise ContractError("index/splits.json must be a scene-to-split object")
-    _require(dict(sorted(Counter(splits.values()).items())), dict(sorted(dataset["split_counts"].items())), "split counts")
+    expected_split_counts = {
+        name: count for name, count in dataset["split_counts"].items() if count != 0
+    }
+    _require(
+        dict(sorted(Counter(splits.values()).items())),
+        dict(sorted(expected_split_counts.items())),
+        "split counts",
+    )
     _require(len(splits), expected["stats"]["scenes"], "split scene count")
     return checked
 

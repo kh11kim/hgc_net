@@ -7,6 +7,7 @@ dependencies = [
   "numpy>=1.26",
   "ninja>=1.11",
   "pillow>=10",
+  "pyzmq>=27",
   "pyyaml>=6",
   "torch==2.9.1",
   "wandb>=0.21,<1",
@@ -14,6 +15,11 @@ dependencies = [
 
 [tool.uv]
 package = false
+
+[dependency-groups]
+dev = [
+  "pytest>=9.0",
+]
 
 [[tool.uv.index]]
 name = "pytorch-cu128"

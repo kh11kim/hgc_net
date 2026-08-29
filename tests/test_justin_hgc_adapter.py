@@ -6,12 +6,16 @@ CUDA extension is not loaded here; that extension is a separate environment gate
 
 from __future__ import annotations
 
+import json
 import math
+import tempfile
 import unittest
+from pathlib import Path
 
 import numpy as np
 import torch
 
+from justin_hgc.data import JustinCanonicalDataset, _sha256
 from justin_hgc.geometry import (
     crop_centered_grid,
     deproject_depth_m,
@@ -31,6 +35,50 @@ from justin_hgc.model import JustinHGCOutputHead
 from justin_hgc.negative_points import select_negative_point_indices
 from justin_hgc.runtime import decode_justin_candidates
 from justin_hgc.templates import TEMPLATE_NAMES, load_template_q_open
+
+
+class DerivedManifestTest(unittest.TestCase):
+    def test_completed_count_tracks_the_canonical_sample_index(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            index = root / "index"
+            derived = root / "derived" / "hgc"
+            index.mkdir(parents=True)
+            derived.mkdir(parents=True)
+            (root / "dataset.yaml").write_text("format: scdm_unified\n", encoding="utf-8")
+            (index / "samples.jsonl").write_text(
+                '{"sample_id": "sample-0"}\n{"sample_id": "sample-1"}\n',
+                encoding="utf-8",
+            )
+            (index / "splits.json").write_text("{}\n", encoding="utf-8")
+            manifest = {
+                "format": "hgc_negative_points_v1",
+                "source_root": str(root),
+                "source_dataset_sha256": _sha256(root / "dataset.yaml"),
+                "source_samples_sha256": _sha256(index / "samples.jsonl"),
+                "source_splits_sha256": _sha256(index / "splits.json"),
+                "point_count": 25_000,
+                "positive_match_radius_m": 0.005,
+                "positive_filter": "all_approach_points_no_thumb_visible_mask",
+                "negative_fraction_of_remaining_points": 0.10,
+                "completed_sample_count": 2,
+            }
+            (derived / "manifest.json").write_text(
+                json.dumps(manifest), encoding="utf-8"
+            )
+            dataset = object.__new__(JustinCanonicalDataset)
+            dataset.root = root
+            dataset.derived_root = derived
+            dataset.point_count = 25_000
+            dataset.negative_fraction = 0.10
+            dataset._validate_derived_manifest()
+
+            manifest["completed_sample_count"] = 10_000
+            (derived / "manifest.json").write_text(
+                json.dumps(manifest), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(ValueError, "expected 2"):
+                dataset._validate_derived_manifest()
 
 
 class GeometryTest(unittest.TestCase):

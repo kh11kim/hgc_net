@@ -25,7 +25,7 @@ from .pose import pose9d_to_targets, rot6d_to_mat
 
 DEFAULT_ROOT = Path(
     "/home/irsl/datasets/dlr/compiled/"
-    "scdm_justin_right_vgn_train_10000_reconstruction_view_aligned_v5"
+    "scdm_paper_floor_10000_v7"
 )
 DEFAULT_GRIPPER_CONFIG = Path(
     "/home/irsl/datasets/dlr/grippers/justin_hand/justin_right_hand_simple.yaml"

@@ -19,7 +19,7 @@ from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_MANIFEST = REPO_ROOT / "contract" / "issue59_upstream_canonical_v5.json"
+DEFAULT_MANIFEST = REPO_ROOT / "contract" / "issue59_upstream_canonical_v7.json"
 
 
 class ContractError(RuntimeError):

@@ -31,7 +31,7 @@ from justin_hgc.negative_points import NEGATIVE_SEED_SALT, select_negative_point
 
 DEFAULT_ROOT = Path(
     "/home/irsl/datasets/dlr/compiled/"
-    "scdm_justin_right_vgn_train_10000_reconstruction_view_aligned_v5"
+    "scdm_paper_floor_10000_v7"
 )
 
 

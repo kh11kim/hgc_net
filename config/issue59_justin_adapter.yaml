@@ -3,8 +3,8 @@ output_contract: q_contact_only
 pose_supervision:
   direct_axis_min_cosine: 0.9999
 data:
-  root: /home/irsl/datasets/dlr/compiled/scdm_justin_right_vgn_train_10000_reconstruction_view_aligned_v5
-  derived_root: /home/irsl/datasets/dlr/compiled/scdm_justin_right_vgn_train_10000_reconstruction_view_aligned_v5/derived/hgc
+  root: /home/irsl/datasets/dlr/compiled/scdm_paper_floor_10000_v7
+  derived_root: /home/irsl/datasets/dlr/compiled/scdm_paper_floor_10000_v7/derived/hgc
   split_seed: 0
   point_count: 25000
   centered_grid_edge_m: 0.5

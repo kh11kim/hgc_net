@@ -24,7 +24,7 @@ from .labels import make_sparse_template_labels
 from .templates import TEMPLATE_NAMES, load_template_q_open
 
 
-DEFAULT_ROOT = Path("/home/irsl/datasets/dlr/compiled/scdm_justin_right_vgn_train_10000_reconstruction_view_aligned_v5")
+DEFAULT_ROOT = Path("/home/irsl/datasets/dlr/compiled/scdm_paper_floor_10000_v7")
 DEFAULT_DERIVED_ROOT = DEFAULT_ROOT / "derived" / "hgc"
 DEFAULT_GRIPPER_CONFIG = Path("/home/irsl/datasets/dlr/grippers/justin_hand/justin_right_hand_simple.yaml")
 
@@ -102,13 +102,14 @@ class JustinCanonicalDataset(Dataset[dict[str, torch.Tensor]]):
         if not path.is_file():
             raise FileNotFoundError(f"HGC derived manifest not found: {path}")
         manifest = json.loads(path.read_text(encoding="utf-8"))
+        samples_path = self.root / "index" / "samples.jsonl"
         expected = {
             "format": "hgc_negative_points_v1",
             "point_count": self.point_count,
             "positive_match_radius_m": 0.005,
             "positive_filter": "all_approach_points_no_thumb_visible_mask",
             "negative_fraction_of_remaining_points": self.negative_fraction,
-            "completed_sample_count": 10000,
+            "completed_sample_count": len(_json_lines(samples_path)),
         }
         for key, value in expected.items():
             if manifest.get(key) != value:
@@ -118,7 +119,7 @@ class JustinCanonicalDataset(Dataset[dict[str, torch.Tensor]]):
             raise ValueError(f"{path}: source_root does not match canonical dataset root")
         source_files = {
             "source_dataset_sha256": self.root / "dataset.yaml",
-            "source_samples_sha256": self.root / "index" / "samples.jsonl",
+            "source_samples_sha256": samples_path,
             "source_splits_sha256": self.root / "index" / "splits.json",
         }
         for key, source_path in source_files.items():

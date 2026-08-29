@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "purpose": "Issue #59 paper-modified Justin-right HGC arm contract for Paper floor-v7",
+  "arm": "paper_modified",
+  "source_contract": "issue59_upstream_canonical_v7.json",
+  "canonical_unified_v7": {
+    "default_root": "/home/irsl/datasets/dlr/compiled/scdm_paper_floor_10000_v7",
+    "split_counts": {
+      "train": 9422,
+      "val": 487,
+      "test": 0
+    },
+    "grid": {
+      "shape": [
+        64,
+        64,
+        64
+      ],
+      "axis_order": [
+        "z",
+        "y",
+        "x"
+      ],
+      "tensor_order": "DHW=ZYX",
+      "edge_length_m": 0.5
+    },
+    "input": {
+      "channels": [
+        "object_full_occupancy",
+        "ground"
+      ],
+      "source_path_field": "reconstruction_full_seg_grid_path",
+      "source_array_key": "full_seg_grid",
+      "object_rule": "label >= 2",
+      "ground_rule": "label == 1",
+      "dtype": "float32"
+    },
+    "targets": {
+      "grasp_point": "canonical approach_point in view-aligned grid frame",
+      "feature_index": "rounded align_corners=true DHW/ZYX index",
+      "dof": 12,
+      "q_open": "not learned; generated client-side from q_contact",
+      "q_squeeze": "not learned; generated client-side from q_contact through the Jacobian/FK mapper",
+      "positive_filter": "approach points inside the centered 0.5m grid with cosine(palm local +z, approach-palm) >= 0.9999",
+      "thumb_visible_mask": "not used"
+    }
+  },
+  "model": {
+    "encoder": "independent 3D-FPN",
+    "reference_only": "scdm_final@a344dcf076bc0f080b96d3909676cf734d4fac32",
+    "local_feature_channels": 128,
+    "head": "paper_modified_hgc.PaperModifiedHGCHead",
+    "quality_head": "dense 64^3 sigmoid focal loss",
+    "runtime_candidate_mask": "object occupancy plus one-voxel 6-neighbor surface dilation",
+    "orientation_head": "864-bin classification",
+    "residual_head": "continuous depth and three angular residuals",
+    "q_contact_head": "learned 12D contact joints",
+    "outputs": [
+      "palm_pose",
+      "quality",
+      "q_contact"
+    ],
+    "loss": "5*quality_focal + orientation_cross_entropy + residual_smooth_l1 + q_contact_smooth_l1"
+  },
+  "training": {
+    "epochs": 80,
+    "batch_size": 16,
+    "workers": 8,
+    "optimizer": "AdamW",
+    "learning_rate": 0.0001,
+    "weight_decay": 0.000001,
+    "seed": 0,
+    "best_checkpoint": "minimum validation total_loss"
+  }
+}

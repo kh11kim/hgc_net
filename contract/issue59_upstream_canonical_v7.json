@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "purpose": "Issue #59 current Paper floor-v7 training contract; earlier dataset contracts remain as history.",
+  "upstream_contract": "issue59_upstream_canonical_v3.json",
+  "canonical_unified_v7": {
+    "default_root": "/home/irsl/datasets/dlr/compiled/scdm_paper_floor_10000_v7",
+    "file_sha256": {
+      "dataset.yaml": "3fbdf400816b65bc5a52157b334b3b25d6fbb0028d6e8b85caed8c475e9d2f42",
+      "index/splits.json": "0e8b70c0369113974f29dc48fe9f778c68861bed3ee14f4452b9910a3eafb3ba",
+      "index/scenes.jsonl": "ed7cfb2919a828c91fb3f0662f76bb43fc40d4d7bdbd1826c4e39cb8b54d6a17",
+      "index/views.jsonl": "6e79d036ad2e294a48a39c5cd17a5a2c2406a45529b57fedc38f466ad2cd3f31",
+      "index/samples.jsonl": "14f8d62a6b5ca0c2e675ca84172d1fa4132302c9d12c7551bf9ceb884ee31114"
+    },
+    "metadata_line_counts": {
+      "index/scenes.jsonl": 9909,
+      "index/views.jsonl": 9909,
+      "index/samples.jsonl": 9909
+    },
+    "split_counts": {
+      "train": 9422,
+      "val": 487,
+      "test": 0
+    },
+    "dataset_contract": {
+      "format": "scdm_unified",
+      "format_version": 2,
+      "sources": [
+        "packed",
+        "dense"
+      ],
+      "split_seed": 0,
+      "stats": {
+        "scenes": 9909,
+        "views": 9909,
+        "eligible_objects": 37400,
+        "samples": 9909,
+        "positive_grasps": 4148415,
+        "negative_grasps": 18291585
+      },
+      "hand": {
+        "name": "justin_right_hand_simple",
+        "palm_frame": "palm",
+        "base_link": "right_hand_base_link",
+        "dof": 12,
+        "joint_order": [
+          "right_1thumb1",
+          "right_1thumb2",
+          "right_1thumb3",
+          "right_2index1",
+          "right_2index2",
+          "right_2index3",
+          "right_3middle1",
+          "right_3middle2",
+          "right_3middle3",
+          "right_4ring1",
+          "right_4ring2",
+          "right_4ring3"
+        ]
+      }
+    }
+  },
+  "derived_negative_points": {
+    "default_root": "/home/irsl/datasets/dlr/compiled/scdm_paper_floor_10000_v7/derived/hgc",
+    "manifest_sha256": "fd6b3c936778892ba9565217653af7a73bb9aa43a326bbb15af62c2d37a4f32d",
+    "format": "hgc_negative_points_v1",
+    "completed_sample_count": 9909,
+    "validated_sample_count": 9909,
+    "invalid_file_count": 0,
+    "total_negative_points": 23920573,
+    "point_count": 25000,
+    "positive_match_radius_m": 0.005,
+    "positive_filter": "all_approach_points_no_thumb_visible_mask",
+    "direct_axis_min_cosine": 0.9999,
+    "negative_fraction_of_remaining_points": 0.1
+  },
+  "stage4_decisions": {
+    "pose_depth_scope_cm": 30,
+    "sparse_point_supervision": {
+      "positive_filter": "all_direct_axis_approach_points_no_thumb_visible_mask",
+      "positive": "Match every non-fallback canonical positive approach_point to sampled points within 5 mm.",
+      "negative": "Use cached deterministic negatives selected from 10% of rows outside every geometric positive neighborhood."
+    }
+  }
+}

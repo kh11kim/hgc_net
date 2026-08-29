@@ -70,6 +70,7 @@ def decode_justin_candidates(
     pose_logits: torch.Tensor,
     q_contact: torch.Tensor,
     bin_spec: BinPoseSpec = DEFAULT_BIN_SPEC,
+    candidate_pool_size: int | None = None,
     minimum_candidates: int | None = None,
 ) -> tuple[dict[str, np.ndarray], dict[str, int]]:
     """Produce palm pose, q_contact and quality candidates.
@@ -88,10 +89,34 @@ def decode_justin_candidates(
         raise ValueError("pose_logits must be NxCxT")
     if q_contact.shape != (len(points), 12, templates):
         raise ValueError("Justin q_contact must be Nx12xT")
+    probability = F.softmax(graspable_logits, dim=1)[:, 1, :]
+    selected_pairs: torch.Tensor | None = None
+    if candidate_pool_size is not None:
+        pool_size = int(candidate_pool_size)
+        if pool_size < 1:
+            raise ValueError("candidate_pool_size must be positive")
+        pool_size = min(pool_size, int(probability.numel()))
+        flat_probability = probability.reshape(-1)
+        try:
+            ranked_pairs = torch.argsort(
+                flat_probability, descending=True, stable=True
+            )[:pool_size]
+        except TypeError:  # pragma: no cover - older torch compatibility
+            ranked_pairs = torch.topk(
+                flat_probability, k=pool_size, sorted=True
+            ).indices
+        selected_pairs = torch.zeros_like(flat_probability, dtype=torch.bool)
+        selected_pairs[ranked_pairs] = True
+        selected_pairs = selected_pairs.reshape_as(probability)
     all_items: list[dict[str, torch.Tensor]] = []
     for template in range(templates):
-        probability = F.softmax(graspable_logits[:, :, template], dim=1)[:, 1]
-        selected = torch.argmax(graspable_logits[:, :, template], dim=1).bool()
+        template_probability = probability[:, template]
+        if selected_pairs is None:
+            selected = torch.argmax(
+                graspable_logits[:, :, template], dim=1
+            ).bool()
+        else:
+            selected = selected_pairs[:, template]
         if not torch.any(selected):
             continue
         target = decode_pose_bins(pose_logits[:, :, template][selected], bin_spec)
@@ -105,7 +130,7 @@ def decode_justin_candidates(
                 "palm_position": palm_position,
                 "rotation": rotation,
                 "q_contact": q_contact[:, :, template][selected],
-                "quality": probability[selected],
+                "quality": template_probability[selected],
                 "grasp_point": anchor,
                 "template_index": torch.full((int(selected.sum()),), template, device=points.device, dtype=torch.long),
             }

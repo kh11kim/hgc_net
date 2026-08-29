@@ -382,13 +382,30 @@ class HGCService:
             graspable, pose, q_contact = _as_output_tensors(model_output)
             if graspable.shape[0] != len(points) or pose.shape[0] != len(points):
                 raise RuntimeError("HGC prediction point count does not match the input feature count")
-            candidates, counts = decode_justin_candidates(
-                points=torch.from_numpy(np.ascontiguousarray(points)).to(self.device),
-                graspable_logits=graspable.to(self.device),
-                pose_logits=pose.to(self.device),
-                q_contact=q_contact.to(self.device),
-                minimum_candidates=CANDIDATE_COUNT,
-            )
+            candidate_pair_count = int(graspable.shape[0] * graspable.shape[-1])
+            pool_size = min(CANDIDATE_COUNT, candidate_pair_count)
+            pool_expansions = 0
+            while True:
+                candidates, counts = decode_justin_candidates(
+                    points=torch.from_numpy(np.ascontiguousarray(points)).to(self.device),
+                    graspable_logits=graspable.to(self.device),
+                    pose_logits=pose.to(self.device),
+                    q_contact=q_contact.to(self.device),
+                    candidate_pool_size=pool_size,
+                    minimum_candidates=CANDIDATE_COUNT,
+                )
+                if len(candidates["quality"]) >= CANDIDATE_COUNT:
+                    break
+                if pool_size >= candidate_pair_count:
+                    raise HGCGenerationError(
+                        "upstream_faithful HGC exhausted every point-template pair "
+                        f"but produced only {len(candidates['quality'])} geometrically valid candidates; "
+                        "exactly 100 are required"
+                    )
+                pool_size = min(pool_size * 2, candidate_pair_count)
+                pool_expansions += 1
+            diagnostics["candidate_pool_count"] = int(pool_size)
+            diagnostics["candidate_pool_expansions"] = int(pool_expansions)
         candidate_count = len(candidates["quality"])
         if candidate_count < CANDIDATE_COUNT:
             raise HGCGenerationError(
